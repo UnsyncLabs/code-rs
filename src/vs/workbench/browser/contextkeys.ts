@@ -16,6 +16,7 @@ import { getRemoteName } from '../../platform/remote/common/remoteHosts.js';
 import { getVirtualWorkspaceScheme } from '../../platform/workspace/common/virtualWorkspace.js';
 import { IWorkingCopyService } from '../services/workingCopy/common/workingCopyService.js';
 import { isNative } from '../../base/common/platform.js';
+import { isTauri } from '../../platform/tauri/common/tauri.js';
 import { WebFileSystemAccess } from '../../platform/files/browser/webFileSystemAccess.js';
 import { IProductService } from '../../platform/product/common/productService.js';
 import { getTitleBarStyle } from '../../platform/window/common/window.js';
@@ -140,7 +141,7 @@ export class WorkbenchContextKeysHandler extends Disposable {
 		// (e.g. "Open Folder...") is limited in web when not connected
 		// to a remote.
 		this.openFolderWorkspaceSupportContext = OpenFolderWorkspaceSupportContext.bindTo(this.contextKeyService);
-		this.openFolderWorkspaceSupportContext.set(isNative || typeof this.environmentService.remoteAuthority === 'string');
+		this.openFolderWorkspaceSupportContext.set(isNative || isTauri() || typeof this.environmentService.remoteAuthority === 'string');
 
 		// Empty workspace support: empty workspaces require built-in file system
 		// providers to be available that allow to enter a workspace or open loose
@@ -148,7 +149,7 @@ export class WorkbenchContextKeysHandler extends Disposable {
 		// - desktop: always
 		// -     web: only when connected to a remote
 		this.emptyWorkspaceSupportContext = EmptyWorkspaceSupportContext.bindTo(this.contextKeyService);
-		this.emptyWorkspaceSupportContext.set(isNative || typeof this.environmentService.remoteAuthority === 'string');
+		this.emptyWorkspaceSupportContext.set(isNative || isTauri() || typeof this.environmentService.remoteAuthority === 'string');
 
 		// Entering a multi root workspace support: support for entering a multi-root
 		// workspace (e.g. "Open Workspace from File...", "Duplicate Workspace", "Save Workspace")
@@ -158,7 +159,7 @@ export class WorkbenchContextKeysHandler extends Disposable {
 		// - desktop: always
 		// -     web: only when connected to a remote
 		this.enterMultiRootWorkspaceSupportContext = EnterMultiRootWorkspaceSupportContext.bindTo(this.contextKeyService);
-		this.enterMultiRootWorkspaceSupportContext.set(isNative || typeof this.environmentService.remoteAuthority === 'string');
+		this.enterMultiRootWorkspaceSupportContext.set(isNative || isTauri() || typeof this.environmentService.remoteAuthority === 'string');
 
 		// Editor Layout
 		this.splitEditorsVerticallyContext = SplitEditorsVertically.bindTo(this.contextKeyService);
