@@ -59,3 +59,49 @@ export function hasTauriGlobalApi(): boolean {
  * present. Example: `index.html?tauriFolder=/home/me/project`.
  */
 export const TAURI_FOLDER_QUERY_PARAM = 'tauriFolder';
+
+interface ITauriInvokeWindow {
+	__TAURI_INTERNALS__?: { invoke(cmd: string, args?: unknown): Promise<unknown> };
+}
+
+export interface ITauriDialogFilter {
+	readonly name: string;
+	readonly extensions: string[];
+}
+
+export interface ITauriOpenDialogOptions {
+	readonly title?: string;
+	readonly defaultPath?: string;
+	readonly directory?: boolean;
+	readonly multiple?: boolean;
+	readonly filters?: ITauriDialogFilter[];
+}
+
+function tauriInvoke<T>(cmd: string, args?: unknown): Promise<T> {
+	const internals = (globalThis as unknown as ITauriInvokeWindow).__TAURI_INTERNALS__;
+	if (!internals) {
+		return Promise.reject(new Error('Tauri runtime not available'));
+	}
+	return internals.invoke(cmd, args) as Promise<T>;
+}
+
+/**
+ * Native open dialog (tauri-plugin-dialog). Resolves to absolute filesystem
+ * paths, or `undefined` when the user cancels.
+ */
+export async function tauriShowOpenDialog(options: ITauriOpenDialogOptions): Promise<string[] | undefined> {
+	const result = await tauriInvoke<string | string[] | null>('plugin:dialog|open', { options });
+	if (!result) {
+		return undefined;
+	}
+	return Array.isArray(result) ? result : [result];
+}
+
+/**
+ * Native save dialog (tauri-plugin-dialog). Resolves to an absolute filesystem
+ * path, or `undefined` when the user cancels.
+ */
+export async function tauriShowSaveDialog(options: Omit<ITauriOpenDialogOptions, 'directory' | 'multiple'>): Promise<string | undefined> {
+	const result = await tauriInvoke<string | null>('plugin:dialog|save', { options });
+	return result ?? undefined;
+}

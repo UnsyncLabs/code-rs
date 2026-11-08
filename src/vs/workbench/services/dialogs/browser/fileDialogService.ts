@@ -21,6 +21,7 @@ import { Iterable } from '../../../../base/common/iterator.js';
 import { WebFileSystemAccess } from '../../../../platform/files/browser/webFileSystemAccess.js';
 import { EmbeddedCodeEditorWidget } from '../../../../editor/browser/widget/codeEditor/embeddedCodeEditorWidget.js';
 import { getErrorMessage } from '../../../../base/common/errors.js';
+import { isTauri, ITauriDialogFilter, tauriShowOpenDialog, tauriShowSaveDialog } from '../../../../platform/tauri/common/tauri.js';
 
 export class FileDialogService extends AbstractFileDialogService implements IFileDialogService {
 
@@ -30,6 +31,10 @@ export class FileDialogService extends AbstractFileDialogService implements IFil
 	}
 
 	async pickFileFolderAndOpen(options: IPickAndOpenOptions): Promise<void> {
+		if (this.useTauriDialogs(this.getFileSystemSchema(options))) {
+			return this.tauriPickAndOpen(options, 'fileFolder');
+		}
+
 		const schema = this.getFileSystemSchema(options);
 
 		if (!options.defaultUri) {
@@ -49,6 +54,10 @@ export class FileDialogService extends AbstractFileDialogService implements IFil
 	}
 
 	async pickFileAndOpen(options: IPickAndOpenOptions): Promise<void> {
+		if (this.useTauriDialogs(this.getFileSystemSchema(options))) {
+			return this.tauriPickAndOpen(options, 'file');
+		}
+
 		const schema = this.getFileSystemSchema(options);
 
 		if (!options.defaultUri) {
@@ -83,6 +92,10 @@ export class FileDialogService extends AbstractFileDialogService implements IFil
 	}
 
 	async pickFolderAndOpen(options: IPickAndOpenOptions): Promise<void> {
+		if (this.useTauriDialogs(this.getFileSystemSchema(options))) {
+			return this.tauriPickAndOpen(options, 'folder');
+		}
+
 		const schema = this.getFileSystemSchema(options);
 
 		if (!options.defaultUri) {
@@ -112,6 +125,11 @@ export class FileDialogService extends AbstractFileDialogService implements IFil
 	}
 
 	async pickFileToSave(defaultUri: URI, availableFileSystems?: string[]): Promise<URI | undefined> {
+		if (this.useTauriDialogs(this.getFileSystemSchema({ defaultUri, availableFileSystems }))) {
+			const path = await tauriShowSaveDialog({ defaultPath: defaultUri.scheme === Schemas.file ? defaultUri.fsPath : undefined });
+			return path ? URI.file(path) : undefined;
+		}
+
 		const schema = this.getFileSystemSchema({ defaultUri, availableFileSystems });
 
 		const options = this.getPickFileToSaveDialogOptions(defaultUri, availableFileSystems);
@@ -155,6 +173,15 @@ export class FileDialogService extends AbstractFileDialogService implements IFil
 	}
 
 	async showSaveDialog(options: ISaveDialogOptions): Promise<URI | undefined> {
+		if (this.useTauriDialogs(this.getFileSystemSchema(options))) {
+			const path = await tauriShowSaveDialog({
+				title: options.title,
+				defaultPath: options.defaultUri?.scheme === Schemas.file ? options.defaultUri.fsPath : undefined,
+				filters: this.toTauriFilters(options.filters),
+			});
+			return path ? URI.file(path) : undefined;
+		}
+
 		const schema = this.getFileSystemSchema(options);
 
 		if (this.shouldUseSimplified(schema)) {
@@ -183,6 +210,17 @@ export class FileDialogService extends AbstractFileDialogService implements IFil
 	}
 
 	async showOpenDialog(options: IOpenDialogOptions): Promise<URI[] | undefined> {
+		if (this.useTauriDialogs(this.getFileSystemSchema(options))) {
+			const paths = await tauriShowOpenDialog({
+				title: options.title,
+				defaultPath: options.defaultUri?.scheme === Schemas.file ? options.defaultUri.fsPath : undefined,
+				directory: !!options.canSelectFolders && !options.canSelectFiles,
+				multiple: !!options.canSelectMany,
+				filters: this.toTauriFilters(options.filters),
+			});
+			return paths?.map(path => URI.file(path));
+		}
+
 		const schema = this.getFileSystemSchema(options);
 
 		if (this.shouldUseSimplified(schema)) {
@@ -292,6 +330,38 @@ export class FileDialogService extends AbstractFileDialogService implements IFil
 
 		return undefined;
 	}
+
+	//#region Tauri native dialogs
+
+	private useTauriDialogs(schema: string): boolean {
+		return isTauri() && schema === Schemas.file;
+	}
+
+	private toTauriFilters(filters: FileFilter[] | undefined): ITauriDialogFilter[] | undefined {
+		return filters?.map(filter => ({ name: filter.name, extensions: filter.extensions }));
+	}
+
+	private async tauriPickAndOpen(options: IPickAndOpenOptions, kind: 'file' | 'folder' | 'fileFolder'): Promise<void> {
+		const defaultUri = options.defaultUri ?? (kind === 'file' ? await this.defaultFilePath(Schemas.file) : await this.defaultFolderPath(Schemas.file));
+		const paths = await tauriShowOpenDialog({
+			title: options.title,
+			defaultPath: defaultUri?.scheme === Schemas.file ? defaultUri.fsPath : undefined,
+			directory: kind === 'folder',
+		});
+		const path = paths?.[0];
+		if (!path) {
+			return;
+		}
+		const uri = URI.file(path);
+		if (kind === 'folder') {
+			await this.hostService.openWindow([{ folderUri: uri }], { forceNewWindow: options.forceNewWindow, remoteAuthority: options.remoteAuthority });
+			return;
+		}
+		this.addFileToRecentlyOpened(uri);
+		await this.openerService.open(uri, { fromUserGesture: true, editorOptions: { pinned: true } });
+	}
+
+	//#endregion
 
 	private shouldUseSimplified(scheme: string): boolean {
 		return ![Schemas.file, Schemas.vscodeUserData, Schemas.tmp].includes(scheme);

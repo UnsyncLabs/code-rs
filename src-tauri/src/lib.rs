@@ -11,6 +11,17 @@
 
 pub mod services;
 
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' | b':' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 /// Builds and runs the Tauri application.
 ///
 /// Marked `#[cfg_attr(mobile, tauri::mobile_entry_point)]` so the same entry
@@ -19,6 +30,11 @@ pub mod services;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
+        // Serves the workbench (out/, extensions/) from disk: no Node web server.
+        .register_uri_scheme_protocol(services::app_protocol::SCHEME, |_ctx, request| {
+            services::app_protocol::handle(request)
+        })
         // pty service (services/pty.rs) tracks live terminal sessions here.
         .manage(services::pty::PtyState::default())
         // Node extension host bridge state (services/extension_host.rs).
@@ -29,6 +45,25 @@ pub fn run() {
             app.manage(services::search::SearchState::default());
             // Filesystem watcher state (services/watcher.rs).
             services::watcher::init(app.handle());
+
+            // Main window. Optional first CLI arg = folder to open.
+            let mut url = services::app_protocol::start_url();
+            if let Some(folder) = std::env::args().nth(1).filter(|a| !a.starts_with('-')) {
+                let folder = std::fs::canonicalize(&folder)
+                    .map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string())
+                    .unwrap_or(folder);
+                url.push_str("?tauriFolder=");
+                url.push_str(&urlencode(&folder));
+            }
+            tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::External(url.parse().expect("valid start url")),
+            )
+            .title("code-rs")
+            .inner_size(1200.0, 800.0)
+            .min_inner_size(600.0, 400.0)
+            .build()?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

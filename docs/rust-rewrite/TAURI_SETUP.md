@@ -185,3 +185,19 @@ cargo build      # compile (does not require icons)
   tighten before shipping.
 - `src/vs/platform/telemetry` and `product.json` are owned by another agent and
   were not touched.
+
+## Running without a web server (current)
+
+The app no longer needs `scripts/code-web.js`. Rust serves the workbench itself
+through the `vscode-app://` protocol (`src-tauri/src/services/app_protocol.rs`):
+`/` renders `out/vs/code/browser/workbench/workbench-dev.html`, `/static/*` serves
+the repo root (`out/`, `extensions/`).
+
+```bash
+node build/next/index.ts transpile          # compile TS -> out/ (Node 24)
+cd src-tauri
+VSCODE_NODE=/path/to/node24 cargo tauri dev -- -- C:\path\to\folder
+```
+
+The optional argument is the folder to open. "Open Folder" / "Open File" /
+save dialogs use the native OS dialog (tauri-plugin-dialog).
