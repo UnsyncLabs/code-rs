@@ -43,8 +43,7 @@ tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "macros
 # Cross-platform named pipe (Windows) / unix domain socket transport for the
 # VSCODE_EXTHOST_IPC_HOOK connection.
 interprocess = { version = "2", features = ["tokio"] }
-# Base64 framing for exthost://data events and exthost_write payloads.
-base64 = "0.22"
+# base64 (declared above) is also used for exthost://data framing.
 
 [features]
 # This feature is used for production builds or when a dev server is not
