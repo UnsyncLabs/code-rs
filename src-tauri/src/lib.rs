@@ -61,6 +61,14 @@ pub fn run() {
                 tauri::WebviewUrl::External(url.parse().expect("valid start url")),
             )
             .title("code-rs")
+            // Paint with the last theme background while pages (re)load: no white flash.
+            .background_color(
+                services::window::parse_color(&services::window::saved_background(app.handle()))
+                    .unwrap_or(tauri::window::Color(255, 255, 255, 255)),
+            )
+            .initialization_script(&services::window::background_init_script(
+                &services::window::saved_background(app.handle()),
+            ))
             .inner_size(1200.0, 800.0)
             .min_inner_size(600.0, 400.0)
             .build()?;
@@ -93,6 +101,7 @@ pub fn run() {
             // --- window ---
             services::window::set_title,
             services::window::toggle_fullscreen,
+            services::window::set_theme_background,
             // --- extension_host ---
             services::extension_host::start_extension_host,
             services::extension_host::stop_extension_host,

@@ -119,6 +119,15 @@ fn render_workbench(root: &Path) -> Result<String, (StatusCode, String)> {
     let config = serde_json::json!({
         "productConfiguration": {
             "enableTelemetry": false,
+            // Open VSX: the open extension registry usable by non-Microsoft builds.
+            "extensionsGallery": {
+                "serviceUrl": "https://open-vsx.org/vscode/gallery",
+                "itemUrl": "https://open-vsx.org/vscode/item",
+                "resourceUrlTemplate": "https://open-vsx.org/vscode/unpkg/{publisher}/{name}/{version}/{path}",
+                "extensionUrlTemplate": "https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest",
+                "controlUrl": "",
+                "nlsBaseUrl": "",
+            },
             "webviewContentExternalBaseUrlTemplate":
                 format!("{base}{STATIC_PREFIX}/out/vs/workbench/contrib/webview/browser/pre/"),
         },
