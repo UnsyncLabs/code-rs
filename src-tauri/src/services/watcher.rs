@@ -24,6 +24,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use notify::{EventKind, RecursiveMode};
+use notify_debouncer_full::notify::Watcher as _;
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, FileIdMap};
 use notify::RecommendedWatcher;
 use serde::{Deserialize, Serialize};
