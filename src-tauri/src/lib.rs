@@ -19,6 +19,8 @@ pub mod services;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        // pty service (services/pty.rs) tracks live terminal sessions here.
+        .manage(services::pty::PtyState::default())
         .setup(|_app| {
             // `manage` is a `Manager` trait method; bring it into scope locally
             // to keep the edit minimal and avoid a top-level import.
@@ -44,6 +46,7 @@ pub fn run() {
             services::pty::pty_write,
             services::pty::pty_resize,
             services::pty::pty_kill,
+            services::pty::pty_list,
             // --- search ---
             services::search::search_text,
             services::search::search_files,
