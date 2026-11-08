@@ -190,4 +190,8 @@ import './contrib/processExplorer/browser/processExplorer.web.contribution.js';
 // Browser View
 import './contrib/browserView/browser/browserView.contribution.js';
 
+// Tauri (code-rs) native shell integration — fs/terminal/search wiring.
+// Self-guards via isTauri(); a no-op in a plain browser.
+import './contrib/tauri/browser/tauri.contribution.js';
+
 //#endregion
