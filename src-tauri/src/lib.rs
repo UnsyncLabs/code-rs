@@ -19,9 +19,12 @@ pub mod services;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .setup(|_app| {
-            // TODO: initialize native services here (start the extension host,
-            // wire up watchers, etc.) once the stubs under `services/` are
+        .setup(|app| {
+            // Register filesystem watcher state so `watcher::watch`/`unwatch`
+            // can track live debouncers. Other services add their own setup.
+            services::watcher::init(app.handle());
+            // TODO: initialize other native services here (start the extension
+            // host, etc.) once the remaining stubs under `services/` are
             // implemented.
             Ok(())
         })
@@ -31,6 +34,11 @@ pub fn run() {
             services::fs::write_file,
             services::fs::stat,
             services::fs::read_dir,
+            services::fs::mkdir,
+            services::fs::delete,
+            services::fs::rename,
+            services::fs::copy,
+            services::fs::realpath,
             // --- watcher ---
             services::watcher::watch,
             services::watcher::unwatch,
