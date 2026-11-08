@@ -8,7 +8,6 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import type * as performance from '../../../../base/common/performance.js';
 import { IProcessEnvironment, OperatingSystem, OS } from '../../../../base/common/platform.js';
-import { TitleEventSource } from '../../../../platform/terminal/common/terminal.js';
 import {
 	IPtyHostLatencyMeasurement,
 	IShellLaunchConfig,
@@ -19,6 +18,7 @@ import {
 	ITerminalsLayoutInfo,
 	ITerminalsLayoutInfoById,
 	TerminalIcon,
+	TitleEventSource,
 } from '../../../../platform/terminal/common/terminal.js';
 import { IProcessDetails } from '../../../../platform/terminal/common/terminalProcess.js';
 import { createTauriPty } from '../../../../platform/terminal/browser/tauriPty.js';
@@ -160,10 +160,8 @@ export class TauriTerminalBackend extends Disposable implements ITerminalBackend
 
 	//#region Layout — kept in-memory only
 
-	private _layoutInfo: ITerminalsLayoutInfoById | undefined;
-
-	async setTerminalLayoutInfo(layoutInfo?: ITerminalsLayoutInfoById): Promise<void> {
-		this._layoutInfo = layoutInfo;
+	async setTerminalLayoutInfo(_layoutInfo?: ITerminalsLayoutInfoById): Promise<void> {
+		// Not persisted: the in-process backend does not revive terminals.
 	}
 
 	async getTerminalLayoutInfo(): Promise<ITerminalsLayoutInfo | undefined> {
