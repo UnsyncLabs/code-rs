@@ -19,6 +19,8 @@ pub mod services;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        // pty service (services/pty.rs) tracks live terminal sessions here.
+        .manage(services::pty::PtyState::default())
         .setup(|_app| {
             // TODO: initialize native services here (start the extension host,
             // wire up watchers, etc.) once the stubs under `services/` are
@@ -39,6 +41,7 @@ pub fn run() {
             services::pty::pty_write,
             services::pty::pty_resize,
             services::pty::pty_kill,
+            services::pty::pty_list,
             // --- search ---
             services::search::search_text,
             services::search::search_files,
