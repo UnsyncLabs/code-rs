@@ -518,7 +518,7 @@ async fn run_host<R: Runtime>(
         let _ = &ns_name;
     }
 
-    let _ = app.emit(&exit_event(id), ExitPayload { id, code, signal });
+    let _ = app.emit(&exit_event(id), ExitPayload { id, code, signal: signal.clone() });
     log::info!("exthost {id}: exited (code={code:?}, signal={signal:?})");
 }
 
