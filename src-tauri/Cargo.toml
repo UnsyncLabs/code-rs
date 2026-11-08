@@ -21,6 +21,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
 
+# --- extension host bridge (services/extension_host.rs) ---
+# Async runtime used by the relay; Tauri already pulls tokio in, we just need
+# the process / io-util / sync / macros features for spawning node and piping.
+tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "macros"] }
+# Cross-platform named pipe (Windows) / unix domain socket transport for the
+# VSCODE_EXTHOST_IPC_HOOK connection.
+interprocess = { version = "2", features = ["tokio"] }
+# Base64 framing for exthost://data events and exthost_write payloads.
+base64 = "0.22"
+
 [features]
 # This feature is used for production builds or when a dev server is not
 # specified, DO NOT REMOVE!!

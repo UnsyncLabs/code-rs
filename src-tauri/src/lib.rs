@@ -19,6 +19,9 @@ pub mod services;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        // Shared state for the Node extension host bridge (see
+        // services/extension_host.rs).
+        .manage(services::extension_host::ExtensionHostState::default())
         .setup(|_app| {
             // TODO: initialize native services here (start the extension host,
             // wire up watchers, etc.) once the stubs under `services/` are
@@ -48,6 +51,7 @@ pub fn run() {
             // --- extension_host ---
             services::extension_host::start_extension_host,
             services::extension_host::stop_extension_host,
+            services::extension_host::exthost_write,
         ])
         .run(tauri::generate_context!())
         .expect("error while running code-rs tauri application");
