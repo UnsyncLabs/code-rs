@@ -63,6 +63,8 @@ import { IWorkspaceTrustEnablementService, IWorkspaceTrustManagementService } fr
 import { CanonicalUriService } from '../services/workspaces/common/canonicalUriService.js';
 import { ICanonicalUriService } from '../../platform/workspace/common/canonicalUri.js';
 import { HTMLFileSystemProvider } from '../../platform/files/browser/htmlFileSystemProvider.js';
+import { TauriFileSystemProvider } from '../../platform/files/browser/tauriFileSystemProvider.js';
+import { isTauri } from '../../platform/tauri/common/tauri.js';
 import { IOpenerService } from '../../platform/opener/common/opener.js';
 import { mixin, safeStringify } from '../../base/common/objects.js';
 import { IndexedDB } from '../../base/browser/indexedDB.js';
@@ -561,8 +563,14 @@ export class BrowserMain extends Disposable {
 		}
 		fileService.registerProvider(Schemas.vscodeUserData, userDataProvider);
 
-		// Local file access (if supported by browser)
-		if (WebFileSystemAccess.supported(mainWindow)) {
+		// Local file access
+		if (isTauri()) {
+			// Inside the Tauri (code-rs) shell: back the `file` scheme with the
+			// native Rust fs service instead of the browser file-access API so
+			// the workbench gets real, unsandboxed on-disk access. See
+			// docs/rust-rewrite/WIRING.md.
+			fileService.registerProvider(Schemas.file, this._register(new TauriFileSystemProvider()));
+		} else if (WebFileSystemAccess.supported(mainWindow)) {
 			fileService.registerProvider(Schemas.file, new HTMLFileSystemProvider(indexedDB, handlesStore, logService));
 		}
 

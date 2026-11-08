@@ -42,6 +42,8 @@ import { IRemoteExplorerService } from '../../remote/common/remoteExplorerServic
 import { IUserDataInitializationService } from '../../userData/browser/userDataInit.js';
 import { IUserDataProfileService } from '../../userDataProfile/common/userDataProfile.js';
 import { AsyncIterableEmitter, AsyncIterableProducer } from '../../../../base/common/async.js';
+import { isTauri } from '../../../../platform/tauri/common/tauri.js';
+import { TauriExtensionHost } from './tauriExtensionHost.js';
 
 export class ExtensionService extends AbstractExtensionService implements IExtensionService {
 
@@ -81,7 +83,10 @@ export class ExtensionService extends AbstractExtensionService implements IExten
 			logService
 		);
 		super(
-			{ hasLocalProcess: false, allowRemoteExtensionsInLocalWebWorker: true },
+			// A local process extension host is available only inside the Tauri
+			// shell (Node host spawned + relayed by Rust); in a plain browser
+			// there is none.
+			{ hasLocalProcess: isTauri(), allowRemoteExtensionsInLocalWebWorker: true },
 			extensionsProposedApi,
 			extensionHostFactory,
 			new BrowserExtensionHostKindPicker(logService),
@@ -240,6 +245,24 @@ class BrowserExtensionHostFactory implements IExtensionHostFactory {
 	createExtensionHost(runningLocations: ExtensionRunningLocationTracker, runningLocation: ExtensionRunningLocation, isInitialStart: boolean): IExtensionHost | null {
 		switch (runningLocation.kind) {
 			case ExtensionHostKind.LocalProcess: {
+				// A local *process* extension host only exists when the web
+				// workbench is hosted by the Tauri shell: the Node host is
+				// spawned by the Rust side and relayed over a pipe. See
+				// `TauriExtensionHost` / docs/rust-rewrite/EXTHOST.md. In a plain
+				// browser there is no local process, so fall through to `null`.
+				if (isTauri()) {
+					const startup = (
+						isInitialStart
+							? ExtensionHostStartup.EagerManualStart
+							: ExtensionHostStartup.EagerAutoStart
+					);
+					return this._instantiationService.createInstance(
+						TauriExtensionHost,
+						runningLocation,
+						startup,
+						this._createLocalExtensionHostDataProvider(runningLocations, runningLocation, isInitialStart)
+					);
+				}
 				return null;
 			}
 			case ExtensionHostKind.LocalWebWorker: {
@@ -317,6 +340,19 @@ export class BrowserExtensionHostKindPicker implements IExtensionHostKindPicker 
 	) { }
 
 	pickExtensionHostKind(extensionId: ExtensionIdentifier, extensionKinds: ExtensionKind[], isInstalledLocally: boolean, isInstalledRemotely: boolean, preference: ExtensionRunningPreference): ExtensionHostKind | null {
+		// Inside the Tauri shell a real local *process* extension host is
+		// available (Node spawned + relayed by Rust). Prefer it for 'ui' and
+		// 'workspace' extensions that are installed locally, so they run as a
+		// full Node extension host instead of (or in addition to) the web
+		// worker. Remote still wins when the user/extension prefers it.
+		if (isTauri() && isInstalledLocally && preference !== ExtensionRunningPreference.Remote) {
+			for (const extensionKind of extensionKinds) {
+				if (extensionKind === 'ui' || extensionKind === 'workspace') {
+					this._logService.trace(`pickRunningLocation for ${extensionId.value} (Tauri) => ${extensionHostKindToString(ExtensionHostKind.LocalProcess)}`);
+					return ExtensionHostKind.LocalProcess;
+				}
+			}
+		}
 		const result = BrowserExtensionHostKindPicker.pickRunningLocation(extensionKinds, isInstalledLocally, isInstalledRemotely, preference);
 		this._logService.trace(`pickRunningLocation for ${extensionId.value}, extension kinds: [${extensionKinds.join(', ')}], isInstalledLocally: ${isInstalledLocally}, isInstalledRemotely: ${isInstalledRemotely}, preference: ${extensionRunningPreferenceToString(preference)} => ${extensionHostKindToString(result)}`);
 		return result;
