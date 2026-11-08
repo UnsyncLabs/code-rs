@@ -21,15 +21,13 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         // pty service (services/pty.rs) tracks live terminal sessions here.
         .manage(services::pty::PtyState::default())
-        .setup(|_app| {
-            // `manage` is a `Manager` trait method; bring it into scope locally
-            // to keep the edit minimal and avoid a top-level import.
+        .setup(|app| {
             use tauri::Manager as _;
-            // Register search cancellation state so search_text/search_files
-            // can look it up via `State<SearchState>` and `AppHandle::state`.
-            _app.manage(services::search::SearchState::default());
-            // TODO: initialize other native services here (start the extension
-            // host, wire up watchers, etc.) once their stubs are implemented.
+            // Search cancellation state (services/search.rs).
+            app.manage(services::search::SearchState::default());
+            // Filesystem watcher state (services/watcher.rs).
+            services::watcher::init(app.handle());
+            // TODO: start the extension host once implemented.
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -38,6 +36,11 @@ pub fn run() {
             services::fs::write_file,
             services::fs::stat,
             services::fs::read_dir,
+            services::fs::mkdir,
+            services::fs::delete,
+            services::fs::rename,
+            services::fs::copy,
+            services::fs::realpath,
             // --- watcher ---
             services::watcher::watch,
             services::watcher::unwatch,

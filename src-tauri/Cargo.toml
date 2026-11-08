@@ -30,6 +30,12 @@ grep-regex = "0.1"
 grep-searcher = "0.1"
 grep-matcher = "0.1"
 
+# --- fs/watcher service deps (fs.rs, watcher.rs) ---
+base64 = "0.22"
+notify = "6.1"
+notify-debouncer-full = "0.3"
+trash = "3"
+
 [features]
 # This feature is used for production builds or when a dev server is not
 # specified, DO NOT REMOVE!!
