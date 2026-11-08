@@ -6,10 +6,11 @@
   "build": {
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
-    "devUrl": "http://localhost:8080",
+    "devUrl": "http://localhost:8099",
     "frontendDist": "../../vscode-web"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "code-rs",
@@ -25,7 +26,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' tauri: http://localhost:8080; script-src 'self' 'unsafe-inline' 'unsafe-eval' tauri: http://localhost:8080; style-src 'self' 'unsafe-inline' tauri: http://localhost:8080; img-src 'self' data: blob: tauri: http://localhost:8080; font-src 'self' data: tauri: http://localhost:8080; connect-src 'self' ws: wss: http: https: tauri:; worker-src 'self' blob:; child-src 'self' blob:"
+      "csp": "default-src 'self' tauri: http://localhost:8099; script-src 'self' 'unsafe-inline' 'unsafe-eval' tauri: http://localhost:8099; style-src 'self' 'unsafe-inline' tauri: http://localhost:8099; img-src 'self' data: blob: tauri: http://localhost:8099; font-src 'self' data: tauri: http://localhost:8099; connect-src 'self' ws: wss: http: https: tauri:; worker-src 'self' blob:; child-src 'self' blob:"
     }
   },
   "bundle": {

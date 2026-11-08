@@ -469,6 +469,17 @@ class WorkspaceProvider implements IWorkspaceProvider {
 			}
 		});
 
+		// Inside the Tauri shell the native side passes the folder to open as an
+		// absolute filesystem path via the `tauriFolder` query parameter. It wins
+		// over the server-provided default folder. See docs/rust-rewrite/WIRING.md.
+		if (!foundWorkspace && isTauri()) {
+			const tauriFolder = query.get(TAURI_FOLDER_QUERY_PARAM);
+			if (tauriFolder) {
+				workspace = { folderUri: URI.file(tauriFolder) };
+				foundWorkspace = true;
+			}
+		}
+
 		// If no workspace is provided through the URL, check for config
 		// attribute from server
 		if (!foundWorkspace) {
@@ -476,17 +487,6 @@ class WorkspaceProvider implements IWorkspaceProvider {
 				workspace = { folderUri: URI.revive(config.folderUri) };
 			} else if (config.workspaceUri) {
 				workspace = { workspaceUri: URI.revive(config.workspaceUri) };
-			} else if (isTauri()) {
-				// Inside the Tauri shell the native side passes the folder to
-				// open as an absolute filesystem path via the `tauriFolder`
-				// query parameter. Turn it into a `file://` folder URI so the
-				// Tauri file system provider (registered in web.main.ts) serves
-				// it. See docs/rust-rewrite/WIRING.md.
-				const tauriFolder = query.get(TAURI_FOLDER_QUERY_PARAM);
-				if (tauriFolder) {
-					workspace = { folderUri: URI.file(tauriFolder) };
-					foundWorkspace = true;
-				}
 			}
 		}
 

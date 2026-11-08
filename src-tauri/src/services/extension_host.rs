@@ -221,8 +221,22 @@ fn resolve_bootstrap<R: Runtime>(
         candidates.push(resource_dir.join("out").join("bootstrap-fork.js"));
         candidates.push(resource_dir.join("bootstrap-fork.js"));
     }
+    // Explicit app root (e.g. the repo checkout during development).
+    if let Ok(root) = std::env::var("VSCODE_APP_ROOT") {
+        candidates.push(PathBuf::from(root).join("out").join("bootstrap-fork.js"));
+    }
+    // Dev builds: the crate lives in <repo>/src-tauri, so also check the repo root.
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("out")
+            .join("bootstrap-fork.js"),
+    );
     if let Ok(cwd) = std::env::current_dir() {
         candidates.push(cwd.join("out").join("bootstrap-fork.js"));
+        if let Some(parent) = cwd.parent() {
+            candidates.push(parent.join("out").join("bootstrap-fork.js"));
+        }
     }
     for c in candidates {
         if c.exists() {

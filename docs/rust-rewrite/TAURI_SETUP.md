@@ -28,7 +28,7 @@ capabilities (fs, file watching, pty, search, window, extension host) to it via
 ```
 
 - **Frontend (dev):** the `@vscode/test-web` dev server started by
-  `./scripts/code-web.sh`, served at `http://localhost:8080`. Tauri's
+  `./scripts/code-web.sh`, served at `http://localhost:8099`. Tauri's
   `build.devUrl` points here.
 - **Frontend (release):** the packaged workbench produced by
   `pnpm run gulp vscode-web-min`, written to `<repo>/../vscode-web`. Tauri's
@@ -119,7 +119,7 @@ Then start the web server that serves `out/` + sources:
 .\scripts\code-web.bat
 ```
 
-This launches `@vscode/test-web` on `http://localhost:8080` (override with
+This launches `@vscode/test-web` on `http://localhost:8099` (override with
 `--port`). Tauri's `devUrl` already targets that URL.
 
 ### Option B — Production bundle
@@ -150,7 +150,7 @@ cargo tauri dev
 ```
 
 `cargo tauri dev` reads `src-tauri/tauri.conf.json`, opens a WebviewWindow, and
-loads `http://localhost:8080`. `beforeDevCommand` is intentionally empty — start
+loads `http://localhost:8099`. `beforeDevCommand` is intentionally empty — start
 the watch + web server yourself (Option A) because that pipeline is long-running
 and owned by the VS Code build, not Tauri.
 
