@@ -21,13 +21,14 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         // pty service (services/pty.rs) tracks live terminal sessions here.
         .manage(services::pty::PtyState::default())
+        // Node extension host bridge state (services/extension_host.rs).
+        .manage(services::extension_host::ExtensionHostState::default())
         .setup(|app| {
             use tauri::Manager as _;
             // Search cancellation state (services/search.rs).
             app.manage(services::search::SearchState::default());
             // Filesystem watcher state (services/watcher.rs).
             services::watcher::init(app.handle());
-            // TODO: start the extension host once implemented.
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -60,6 +61,7 @@ pub fn run() {
             // --- extension_host ---
             services::extension_host::start_extension_host,
             services::extension_host::stop_extension_host,
+            services::extension_host::exthost_write,
         ])
         .run(tauri::generate_context!())
         .expect("error while running code-rs tauri application");
