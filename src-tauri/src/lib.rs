@@ -20,9 +20,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|_app| {
-            // TODO: initialize native services here (start the extension host,
-            // wire up watchers, etc.) once the stubs under `services/` are
-            // implemented.
+            // `manage` is a `Manager` trait method; bring it into scope locally
+            // to keep the edit minimal and avoid a top-level import.
+            use tauri::Manager as _;
+            // Register search cancellation state so search_text/search_files
+            // can look it up via `State<SearchState>` and `AppHandle::state`.
+            _app.manage(services::search::SearchState::default());
+            // TODO: initialize other native services here (start the extension
+            // host, wire up watchers, etc.) once their stubs are implemented.
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -42,6 +47,7 @@ pub fn run() {
             // --- search ---
             services::search::search_text,
             services::search::search_files,
+            services::search::search_cancel,
             // --- window ---
             services::window::set_title,
             services::window::toggle_fullscreen,
