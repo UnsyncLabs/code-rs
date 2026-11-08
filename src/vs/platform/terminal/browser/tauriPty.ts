@@ -3,7 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { VSBuffer } from '../../../base/common/buffer.js';
 import { Emitter } from '../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../base/common/lifecycle.js';
 import {
@@ -36,12 +35,6 @@ interface ITauriInternals {
 	transformCallback?(callback: (response: unknown) => void, once?: boolean): number;
 }
 
-declare global {
-	interface Window {
-		__TAURI_INTERNALS__?: ITauriInternals;
-	}
-}
-
 /** Payload shape emitted by the Rust side on `pty://exit/{id}`. */
 interface IPtyExitPayload {
 	id: number;
@@ -63,7 +56,7 @@ interface IPtySpawnOptions {
  * workbench is not running inside the Tauri (code-rs) shell.
  */
 function getTauri(): ITauriInternals {
-	const tauri = window.__TAURI_INTERNALS__;
+	const tauri = (globalThis as unknown as { __TAURI_INTERNALS__?: ITauriInternals }).__TAURI_INTERNALS__;
 	if (!tauri || typeof tauri.invoke !== 'function') {
 		throw new Error('tauriPty: window.__TAURI_INTERNALS__ is not available; not running inside the Tauri shell');
 	}
@@ -92,7 +85,7 @@ async function listen(
 ): Promise<() => void> {
 	// Preferred: the public event API when the `@tauri-apps/api` global is
 	// exposed (it re-uses the internals bridge under the hood).
-	const pub = (window as unknown as {
+	const pub = (globalThis as unknown as {
 		__TAURI__?: { event?: { listen?: (event: string, cb: (e: { payload: unknown }) => void) => Promise<unknown> } };
 	}).__TAURI__;
 	if (pub?.event?.listen) {

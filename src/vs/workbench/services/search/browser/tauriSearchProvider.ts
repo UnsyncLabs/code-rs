@@ -36,11 +36,9 @@ interface TauriEventPluginInternals {
 	unregisterListener(event: string, eventId: number): void;
 }
 
-declare global {
-	interface Window {
-		__TAURI_INTERNALS__?: TauriInternals;
-		__TAURI_EVENT_PLUGIN_INTERNALS__?: TauriEventPluginInternals;
-	}
+interface ITauriSearchWindow {
+	__TAURI_INTERNALS__?: TauriInternals;
+	__TAURI_EVENT_PLUGIN_INTERNALS__?: TauriEventPluginInternals;
 }
 
 /** Shape of a Tauri event payload envelope delivered to listener callbacks. */
@@ -165,7 +163,7 @@ export class TauriSearchProvider extends Disposable implements ISearchResultProv
 			includes,
 			excludes,
 			maxResults: query.maxResults,
-			useIgnoreFiles: !query.userDisabledExcludesAndIgnoreFiles,
+			useIgnoreFiles: true,
 		};
 
 		return this.runStreamingSearch(
@@ -277,7 +275,7 @@ class DisposableTracker extends Disposable {
 // ---------------------------------------------------------------------------
 
 function requireInternals(): TauriInternals {
-	const internals = window.__TAURI_INTERNALS__;
+	const internals = (globalThis as unknown as ITauriSearchWindow).__TAURI_INTERNALS__;
 	if (!internals) {
 		throw new Error('TauriSearchProvider: window.__TAURI_INTERNALS__ is not available (not running inside the Tauri shell)');
 	}
@@ -304,7 +302,7 @@ async function listen<T>(
 	return () => {
 		// Best-effort synchronous local unregister + async backend unlisten,
 		// matching the reference implementation's `_unlisten`.
-		window.__TAURI_EVENT_PLUGIN_INTERNALS__?.unregisterListener(event, eventId);
+		(globalThis as unknown as ITauriSearchWindow).__TAURI_EVENT_PLUGIN_INTERNALS__?.unregisterListener(event, eventId);
 		void internals.invoke('plugin:event|unlisten', { event, eventId }).catch(() => { /* ignore */ });
 	};
 }

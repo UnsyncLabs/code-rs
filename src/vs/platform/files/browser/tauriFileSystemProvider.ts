@@ -320,7 +320,7 @@ export class TauriFileSystemProvider extends Disposable implements IFileSystemPr
 
 		// Fallback: Tauri forwards events to the webview as a DOM event on
 		// `window` in some configurations. Listen defensively.
-		const handler = (evt: Event) => {
+		const handler = (evt: globalThis.Event) => {
 			const detail = (evt as CustomEvent<ITauriFileChange>).detail;
 			if (detail) {
 				this.handleNativeChange(detail);

@@ -232,7 +232,6 @@ export class TauriExtensionHost extends Disposable implements IExtensionHost {
 
 	private _terminating = false;
 	private _hostId: number | null = null;
-	private _socket: TauriRelaySocket | null = null;
 	private _protocol: IMessagePassingProtocol | null = null;
 	private _messageProtocol: Promise<IMessagePassingProtocol> | null = null;
 
@@ -294,7 +293,6 @@ export class TauriExtensionHost extends Disposable implements IExtensionHost {
 		this._hostId = hostId;
 
 		const socket = this._register(new TauriRelaySocket(tauri, hostId));
-		this._socket = socket;
 		await socket.connect();
 
 		// Surface process exit to IExtensionHost consumers.
