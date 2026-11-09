@@ -182,7 +182,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          pacman -Syu --noconfirm github-cli
+          pacman -Syu --noconfirm github-cli git
           cd packaging/arch
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*_amd64.deb' -O code-rs.deb
 
