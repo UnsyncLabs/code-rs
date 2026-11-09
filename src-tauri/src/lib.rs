@@ -146,6 +146,7 @@ pub fn run() {
             services::assistant::assistant_provider_save,
             services::assistant::assistant_provider_delete,
             services::assistant::assistant_complete,
+            services::assistant::assistant_chat,
             // --- command guardian ---
             services::guardian::guardian_assess,
             services::guardian::guardian_exec,

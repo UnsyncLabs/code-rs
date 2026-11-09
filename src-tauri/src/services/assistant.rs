@@ -274,6 +274,328 @@ pub async fn assistant_complete<R: Runtime>(
     Ok(Completion { text, provider: provider.label, model: provider.model, input_tokens, output_tokens })
 }
 
+// ---------------------------------------------------------------------------
+// Multi-turn chat with tools (Contract A: `assistant_chat`).
+//
+// The chat agent speaks a small provider-neutral shape (`Block` / `ChatMessage`
+// / `ToolSpec` / `ChatTurn`). We translate that to each provider's wire format
+// and translate the response back. The mapping functions below are pure (no
+// network, no app handle) so they can be unit-tested; `assistant_chat` wires
+// them to the existing keychain, HTTP and daily-usage helpers.
+// ---------------------------------------------------------------------------
+
+/// A piece of a message. Serialised with an internally tagged `type` field and
+/// camelCase field names on the wire (`toolUseId`, `isError`), matching the TS
+/// contract.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Block {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
+    #[serde(rename_all = "camelCase")]
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ChatMessage {
+    pub role: String, // "user" | "assistant"
+    pub content: Vec<Block>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    /// JSON schema for the tool's arguments.
+    pub input_schema: Value,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatTurn {
+    /// Only `text` and `tool_use` blocks are ever produced here.
+    pub content: Vec<Block>,
+    pub stop_reason: String,
+    pub provider: String,
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+/// Normalise a provider stop/finish reason to the contract's vocabulary.
+fn map_stop_reason_anthropic(reason: Option<&str>) -> String {
+    match reason {
+        Some("end_turn") => "end_turn",
+        Some("tool_use") => "tool_use",
+        Some("max_tokens") => "max_tokens",
+        Some("refusal") => "refusal",
+        _ => "other",
+    }
+    .to_string()
+}
+
+fn map_finish_reason_openai(reason: Option<&str>) -> String {
+    match reason {
+        Some("tool_calls") | Some("function_call") => "tool_use",
+        Some("length") => "max_tokens",
+        Some("stop") => "end_turn",
+        Some("content_filter") => "refusal",
+        _ => "other",
+    }
+    .to_string()
+}
+
+// --- Anthropic mapping -----------------------------------------------------
+
+/// Build the Anthropic `/v1/messages` request body from the neutral shape.
+fn anthropic_request_body(model: &str, max_tokens: u32, system: &str, messages: &[ChatMessage], tools: &[ToolSpec]) -> Value {
+    let msgs: Vec<Value> = messages
+        .iter()
+        .map(|m| {
+            let content: Vec<Value> = m
+                .content
+                .iter()
+                .map(|b| match b {
+                    Block::Text { text } => json!({ "type": "text", "text": text }),
+                    Block::ToolUse { id, name, input } => {
+                        json!({ "type": "tool_use", "id": id, "name": name, "input": input })
+                    }
+                    Block::ToolResult { tool_use_id, content, is_error } => {
+                        let mut v = json!({ "type": "tool_result", "tool_use_id": tool_use_id, "content": content });
+                        if let Some(err) = is_error {
+                            v["is_error"] = json!(err);
+                        }
+                        v
+                    }
+                })
+                .collect();
+            json!({ "role": m.role, "content": content })
+        })
+        .collect();
+
+    let mut body = json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": msgs,
+        "output_config": { "effort": "medium" },
+        // Server-side fallback: a request declined by the model's safeguards is
+        // retried on another model instead of failing.
+        "fallbacks": "default",
+    });
+
+    if !tools.is_empty() {
+        let tool_defs: Vec<Value> = tools
+            .iter()
+            .map(|t| json!({ "name": t.name, "description": t.description, "input_schema": t.input_schema }))
+            .collect();
+        body["tools"] = json!(tool_defs);
+    }
+    body
+}
+
+/// Parse an Anthropic response into the neutral `ChatTurn` content + usage.
+/// Keeps only `text` and `tool_use` blocks.
+fn parse_anthropic_response(v: &Value) -> (Vec<Block>, String, u64, u64) {
+    let blocks: Vec<Block> = v
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|b| match b.get("type").and_then(Value::as_str) {
+                    Some("text") => Some(Block::Text { text: b.get("text").and_then(Value::as_str).unwrap_or_default().to_string() }),
+                    Some("tool_use") => Some(Block::ToolUse {
+                        id: b.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
+                        name: b.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
+                        input: b.get("input").cloned().unwrap_or(Value::Null),
+                    }),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let stop = map_stop_reason_anthropic(v.get("stop_reason").and_then(Value::as_str));
+    let usage = |k: &str| v.pointer(&format!("/usage/{k}")).and_then(Value::as_u64).unwrap_or(0);
+    (blocks, stop, usage("input_tokens"), usage("output_tokens"))
+}
+
+// --- OpenAI mapping --------------------------------------------------------
+
+/// Build the OpenAI/OpenRouter/compatible `/chat/completions` request body.
+/// `system` becomes the first message; assistant `tool_use` blocks become
+/// `tool_calls`; `tool_result` blocks become `role: "tool"` messages.
+fn openai_request_body(model: &str, is_openai: bool, max_tokens: u32, system: &str, messages: &[ChatMessage], tools: &[ToolSpec]) -> Value {
+    let mut msgs: Vec<Value> = Vec::new();
+    if !system.is_empty() {
+        msgs.push(json!({ "role": "system", "content": system }));
+    }
+
+    for m in messages {
+        // A single neutral message may carry text, tool_use and tool_result
+        // blocks; OpenAI wants text + tool_calls on one assistant/user message
+        // and each tool_result as its own `role: "tool"` message.
+        let mut text_parts: Vec<String> = Vec::new();
+        let mut tool_calls: Vec<Value> = Vec::new();
+        let mut tool_results: Vec<Value> = Vec::new();
+
+        for b in &m.content {
+            match b {
+                Block::Text { text } => text_parts.push(text.clone()),
+                Block::ToolUse { id, name, input } => tool_calls.push(json!({
+                    "id": id,
+                    "type": "function",
+                    "function": { "name": name, "arguments": input.to_string() },
+                })),
+                Block::ToolResult { tool_use_id, content, .. } => tool_results.push(json!({
+                    "role": "tool",
+                    "tool_call_id": tool_use_id,
+                    "content": content,
+                })),
+            }
+        }
+
+        let has_text = !text_parts.is_empty();
+        if has_text || !tool_calls.is_empty() {
+            let mut msg = json!({ "role": m.role });
+            // content is required; use null when there is only tool_calls.
+            msg["content"] = if has_text { json!(text_parts.join("")) } else { Value::Null };
+            if !tool_calls.is_empty() {
+                msg["tool_calls"] = json!(tool_calls);
+            }
+            msgs.push(msg);
+        }
+        msgs.extend(tool_results);
+    }
+
+    let mut body = json!({ "model": model, "messages": msgs });
+    // OpenAI's current models take max_completion_tokens; other servers use max_tokens.
+    let limit_field = if is_openai { "max_completion_tokens" } else { "max_tokens" };
+    body[limit_field] = json!(max_tokens);
+
+    if !tools.is_empty() {
+        let tool_defs: Vec<Value> = tools
+            .iter()
+            .map(|t| json!({
+                "type": "function",
+                "function": { "name": t.name, "description": t.description, "parameters": t.input_schema },
+            }))
+            .collect();
+        body["tools"] = json!(tool_defs);
+    }
+    body
+}
+
+/// Parse an OpenAI-family response into neutral `ChatTurn` content + usage.
+/// Tool-call arguments are parsed as JSON; on failure the raw string is kept as
+/// `{"_raw": "..."}`.
+fn parse_openai_response(v: &Value) -> (Vec<Block>, String, u64, u64) {
+    let mut blocks: Vec<Block> = Vec::new();
+    let message = v.pointer("/choices/0/message");
+
+    if let Some(text) = message.and_then(|m| m.get("content")).and_then(Value::as_str) {
+        if !text.is_empty() {
+            blocks.push(Block::Text { text: text.to_string() });
+        }
+    }
+
+    if let Some(calls) = message.and_then(|m| m.get("tool_calls")).and_then(Value::as_array) {
+        for call in calls {
+            let id = call.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+            let name = call.pointer("/function/name").and_then(Value::as_str).unwrap_or_default().to_string();
+            let raw_args = call.pointer("/function/arguments").and_then(Value::as_str).unwrap_or("");
+            let input = if raw_args.trim().is_empty() {
+                json!({})
+            } else {
+                serde_json::from_str::<Value>(raw_args).unwrap_or_else(|_| json!({ "_raw": raw_args }))
+            };
+            blocks.push(Block::ToolUse { id, name, input });
+        }
+    }
+
+    let finish = map_finish_reason_openai(v.pointer("/choices/0/finish_reason").and_then(Value::as_str));
+    let usage = |k: &str| v.pointer(&format!("/usage/{k}")).and_then(Value::as_u64).unwrap_or(0);
+    (blocks, finish, usage("prompt_tokens"), usage("completion_tokens"))
+}
+
+// --- Blocking provider calls ------------------------------------------------
+
+fn chat_anthropic(p: &Provider, key: &str, system: &str, messages: &[ChatMessage], tools: &[ToolSpec], max_tokens: u32) -> Result<(Vec<Block>, String, u64, u64), String> {
+    let body = anthropic_request_body(&p.model, max_tokens, system, messages, tools);
+    let headers = [
+        ("x-api-key", key.to_string()),
+        ("anthropic-version", ANTHROPIC_VERSION.to_string()),
+        ("anthropic-beta", "server-side-fallback-2026-07-01".to_string()),
+    ];
+    let v = post_json(&format!("{}/v1/messages", base_url(p)), &headers, &body)?;
+    Ok(parse_anthropic_response(&v))
+}
+
+fn chat_openai_like(p: &Provider, key: Option<&str>, system: &str, messages: &[ChatMessage], tools: &[ToolSpec], max_tokens: u32) -> Result<(Vec<Block>, String, u64, u64), String> {
+    let body = openai_request_body(&p.model, p.kind == ProviderKind::Openai, max_tokens, system, messages, tools);
+    let mut headers = Vec::new();
+    if let Some(key) = key {
+        headers.push(("authorization", format!("Bearer {key}")));
+    }
+    if p.kind == ProviderKind::Openrouter {
+        headers.push(("x-title", "code-rs".to_string()));
+    }
+    let v = post_json(&format!("{}/chat/completions", base_url(p)), &headers, &body)?;
+    Ok(parse_openai_response(&v))
+}
+
+/// Multi-turn chat with tools. The frontend passes the whole conversation each
+/// call; `daily_token_limit` 0 = unlimited.
+#[tauri::command]
+pub async fn assistant_chat<R: Runtime>(
+    app: AppHandle<R>,
+    provider_id: String,
+    system: String,
+    messages: Vec<ChatMessage>,
+    tools: Vec<ToolSpec>,
+    max_tokens: Option<u32>,
+    daily_token_limit: Option<u64>,
+) -> Result<ChatTurn, String> {
+    let provider = load(&app).into_iter().find(|p| p.id == provider_id).ok_or(format!("unknown provider '{provider_id}'"))?;
+    let url = base_url(&provider);
+    check_url(&url)?;
+    let key = get_key(&provider.id);
+    if key.is_none() && !matches!(provider.kind, ProviderKind::OpenaiCompatible) {
+        return Err(format!("no API key stored for provider '{}'", provider.label));
+    }
+    let limit = daily_token_limit.unwrap_or(0);
+    usage_check_and_add(&app, &provider.id, 0, limit)?;
+    let max_tokens = max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
+
+    let p = provider.clone();
+    let (content, stop_reason, input_tokens, output_tokens) = tauri::async_runtime::spawn_blocking(move || match p.kind {
+        ProviderKind::Anthropic => chat_anthropic(&p, key.as_deref().unwrap_or_default(), &system, &messages, &tools, max_tokens),
+        _ => chat_openai_like(&p, key.as_deref(), &system, &messages, &tools, max_tokens),
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let _ = usage_check_and_add(&app, &provider.id, input_tokens + output_tokens, 0);
+    Ok(ChatTurn {
+        content,
+        stop_reason,
+        provider: provider.label,
+        model: provider.model,
+        input_tokens,
+        output_tokens,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +614,245 @@ mod tests {
     fn http_errors_surface_the_api_message() {
         let msg = http_error(401, r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#);
         assert_eq!(msg, "provider returned HTTP 401: invalid x-api-key");
+    }
+
+    // --- chat mapping: shared fixtures -------------------------------------
+
+    fn sample_messages() -> Vec<ChatMessage> {
+        vec![
+            ChatMessage { role: "user".into(), content: vec![Block::Text { text: "read foo.rs".into() }] },
+            ChatMessage {
+                role: "assistant".into(),
+                content: vec![
+                    Block::Text { text: "I'll read it.".into() },
+                    Block::ToolUse { id: "call_1".into(), name: "file_read".into(), input: json!({ "path": "foo.rs" }) },
+                ],
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: vec![Block::ToolResult { tool_use_id: "call_1".into(), content: "fn main() {}".into(), is_error: Some(false) }],
+            },
+        ]
+    }
+
+    fn sample_tools() -> Vec<ToolSpec> {
+        vec![ToolSpec {
+            name: "file_read".into(),
+            description: "Read a file".into(),
+            input_schema: json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }),
+        }]
+    }
+
+    // --- Block serde ------------------------------------------------------
+
+    #[test]
+    fn block_serialises_with_camelcase_tagged_fields() {
+        let b = Block::ToolResult { tool_use_id: "t1".into(), content: "ok".into(), is_error: Some(true) };
+        let v = serde_json::to_value(&b).unwrap();
+        assert_eq!(v, json!({ "type": "tool_result", "toolUseId": "t1", "content": "ok", "isError": true }));
+
+        let b2 = Block::ToolUse { id: "x".into(), name: "n".into(), input: json!({ "a": 1 }) };
+        let v2 = serde_json::to_value(&b2).unwrap();
+        assert_eq!(v2, json!({ "type": "tool_use", "id": "x", "name": "n", "input": { "a": 1 } }));
+
+        // is_error omitted when None.
+        let b3 = Block::ToolResult { tool_use_id: "t2".into(), content: "c".into(), is_error: None };
+        let v3 = serde_json::to_value(&b3).unwrap();
+        assert_eq!(v3, json!({ "type": "tool_result", "toolUseId": "t2", "content": "c" }));
+    }
+
+    // --- Anthropic request body -------------------------------------------
+
+    #[test]
+    fn anthropic_request_maps_blocks_and_tools() {
+        let body = anthropic_request_body("claude-x", 8000, "be nice", &sample_messages(), &sample_tools());
+        assert_eq!(body["model"], "claude-x");
+        assert_eq!(body["max_tokens"], 8000);
+        assert_eq!(body["system"], "be nice");
+        assert_eq!(body["output_config"]["effort"], "medium");
+        assert_eq!(body["fallbacks"], "default");
+
+        // tool_use preserved as an Anthropic content block.
+        assert_eq!(body["messages"][1]["content"][1]["type"], "tool_use");
+        assert_eq!(body["messages"][1]["content"][1]["id"], "call_1");
+        assert_eq!(body["messages"][1]["content"][1]["name"], "file_read");
+        assert_eq!(body["messages"][1]["content"][1]["input"]["path"], "foo.rs");
+
+        // tool_result uses snake_case tool_use_id + is_error.
+        let tr = &body["messages"][2]["content"][0];
+        assert_eq!(tr["type"], "tool_result");
+        assert_eq!(tr["tool_use_id"], "call_1");
+        assert_eq!(tr["content"], "fn main() {}");
+        assert_eq!(tr["is_error"], false);
+
+        // tool spec mapped to {name, description, input_schema}.
+        assert_eq!(body["tools"][0]["name"], "file_read");
+        assert_eq!(body["tools"][0]["description"], "Read a file");
+        assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn anthropic_request_omits_tools_when_empty() {
+        let body = anthropic_request_body("m", 100, "", &[], &[]);
+        assert!(body.get("tools").is_none());
+    }
+
+    // --- Anthropic response parsing ---------------------------------------
+
+    #[test]
+    fn anthropic_response_keeps_text_and_tool_use_only() {
+        let v = json!({
+            "content": [
+                { "type": "text", "text": "hello" },
+                { "type": "thinking", "thinking": "ignored" },
+                { "type": "tool_use", "id": "u1", "name": "file_read", "input": { "path": "a" } }
+            ],
+            "stop_reason": "tool_use",
+            "usage": { "input_tokens": 12, "output_tokens": 34 }
+        });
+        let (blocks, stop, inp, out) = parse_anthropic_response(&v);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0], Block::Text { text: "hello".into() });
+        assert_eq!(blocks[1], Block::ToolUse { id: "u1".into(), name: "file_read".into(), input: json!({ "path": "a" }) });
+        assert_eq!(stop, "tool_use");
+        assert_eq!(inp, 12);
+        assert_eq!(out, 34);
+    }
+
+    #[test]
+    fn anthropic_stop_reasons_map_to_contract() {
+        assert_eq!(map_stop_reason_anthropic(Some("end_turn")), "end_turn");
+        assert_eq!(map_stop_reason_anthropic(Some("tool_use")), "tool_use");
+        assert_eq!(map_stop_reason_anthropic(Some("max_tokens")), "max_tokens");
+        assert_eq!(map_stop_reason_anthropic(Some("refusal")), "refusal");
+        assert_eq!(map_stop_reason_anthropic(Some("pause_turn")), "other");
+        assert_eq!(map_stop_reason_anthropic(None), "other");
+    }
+
+    // --- OpenAI request body ----------------------------------------------
+
+    #[test]
+    fn openai_request_maps_system_tool_calls_and_results() {
+        let body = openai_request_body("gpt-x", true, 500, "be nice", &sample_messages(), &sample_tools());
+
+        // system is the first message.
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][0]["content"], "be nice");
+
+        // user text.
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][1]["content"], "read foo.rs");
+
+        // assistant text + tool_calls with arguments as a JSON string.
+        assert_eq!(body["messages"][2]["role"], "assistant");
+        assert_eq!(body["messages"][2]["content"], "I'll read it.");
+        let call = &body["messages"][2]["tool_calls"][0];
+        assert_eq!(call["id"], "call_1");
+        assert_eq!(call["type"], "function");
+        assert_eq!(call["function"]["name"], "file_read");
+        let args = call["function"]["arguments"].as_str().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(args).unwrap(), json!({ "path": "foo.rs" }));
+
+        // tool_result becomes a role:tool message with tool_call_id.
+        assert_eq!(body["messages"][3]["role"], "tool");
+        assert_eq!(body["messages"][3]["tool_call_id"], "call_1");
+        assert_eq!(body["messages"][3]["content"], "fn main() {}");
+
+        // OpenAI uses max_completion_tokens.
+        assert_eq!(body["max_completion_tokens"], 500);
+        assert!(body.get("max_tokens").is_none());
+
+        // tools shaped as {type:function, function:{name,description,parameters}}.
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["function"]["name"], "file_read");
+        assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn openai_request_uses_max_tokens_for_non_openai() {
+        let body = openai_request_body("llama", false, 42, "s", &sample_messages(), &[]);
+        assert_eq!(body["max_tokens"], 42);
+        assert!(body.get("max_completion_tokens").is_none());
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn openai_request_tool_only_assistant_has_null_content() {
+        let messages = vec![ChatMessage {
+            role: "assistant".into(),
+            content: vec![Block::ToolUse { id: "c".into(), name: "n".into(), input: json!({}) }],
+        }];
+        let body = openai_request_body("m", false, 10, "", &messages, &[]);
+        // No system message (empty), assistant message is first.
+        assert_eq!(body["messages"][0]["role"], "assistant");
+        assert!(body["messages"][0]["content"].is_null());
+        assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "c");
+    }
+
+    // --- OpenAI response parsing ------------------------------------------
+
+    #[test]
+    fn openai_response_parses_text_and_tool_calls() {
+        let v = json!({
+            "choices": [{
+                "message": {
+                    "content": "working on it",
+                    "tool_calls": [{
+                        "id": "tc1",
+                        "type": "function",
+                        "function": { "name": "file_read", "arguments": "{\"path\":\"a.rs\"}" }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": { "prompt_tokens": 7, "completion_tokens": 9 }
+        });
+        let (blocks, stop, inp, out) = parse_openai_response(&v);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0], Block::Text { text: "working on it".into() });
+        assert_eq!(blocks[1], Block::ToolUse { id: "tc1".into(), name: "file_read".into(), input: json!({ "path": "a.rs" }) });
+        assert_eq!(stop, "tool_use");
+        assert_eq!(inp, 7);
+        assert_eq!(out, 9);
+    }
+
+    #[test]
+    fn openai_response_malformed_arguments_pass_raw() {
+        let v = json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "tc2",
+                        "type": "function",
+                        "function": { "name": "n", "arguments": "not json" }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+        let (blocks, _stop, _i, _o) = parse_openai_response(&v);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0], Block::ToolUse { id: "tc2".into(), name: "n".into(), input: json!({ "_raw": "not json" }) });
+    }
+
+    #[test]
+    fn openai_response_empty_content_is_dropped() {
+        let v = json!({
+            "choices": [{ "message": { "content": "" }, "finish_reason": "stop" }]
+        });
+        let (blocks, stop, _i, _o) = parse_openai_response(&v);
+        assert!(blocks.is_empty());
+        assert_eq!(stop, "end_turn");
+    }
+
+    #[test]
+    fn openai_finish_reasons_map_to_contract() {
+        assert_eq!(map_finish_reason_openai(Some("tool_calls")), "tool_use");
+        assert_eq!(map_finish_reason_openai(Some("function_call")), "tool_use");
+        assert_eq!(map_finish_reason_openai(Some("length")), "max_tokens");
+        assert_eq!(map_finish_reason_openai(Some("stop")), "end_turn");
+        assert_eq!(map_finish_reason_openai(Some("content_filter")), "refusal");
+        assert_eq!(map_finish_reason_openai(None), "other");
     }
 }
