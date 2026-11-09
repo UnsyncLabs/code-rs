@@ -49,7 +49,8 @@ jobs:
             arch: arm64
             rust_target: aarch64-apple-darwin
           - name: macOS Intel
-            os: macos-13
+            # macos-13 was retired (jobs stay queued forever).
+            os: macos-15-intel
             platform: darwin
             arch: x64
             rust_target: x86_64-apple-darwin
@@ -81,11 +82,20 @@ jobs:
 
       - name: Install dependencies
         shell: bash
-        run: $PNPM install --frozen-lockfile
+        # Retries: postinstall scripts download files from GitHub and a 5xx fails the release.
+        run: |
+          for attempt in 1 2 3; do
+            $PNPM install --frozen-lockfile && exit 0
+            echo "pnpm install failed (attempt $attempt), retrying in 30 s"
+            sleep 30
+          done
+          exit 1
 
       - name: Build workbench and built-in extensions
         shell: bash
         run: |
+          # The codicon font is not in git; the gulp compile normally copies it from node_modules.
+          cp node_modules/@vscode/codicons/dist/codicon.ttf src/vs/base/browser/ui/codicons/codicon/codicon.ttf
           node build/next/index.ts bundle --minify --nls --target server-web --out out-bundle
           $PNPM run gulp compile-extensions compile-extension-media
         env:
