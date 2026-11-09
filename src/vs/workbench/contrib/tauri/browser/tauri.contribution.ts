@@ -20,6 +20,7 @@ import { TauriTerminalBackend } from './tauriTerminalBackend.js';
 import { TauriThemeBackgroundContribution } from './tauriThemeBackground.js';
 import { TauriUpdatesContribution } from './tauriUpdates.js';
 import { TauriMcpContribution } from './tauriMcp.js';
+import { TauriChatAgentContribution } from './tauriChatAgent.js';
 import { TauriExtensionAuditContribution } from './tauriExtensionAudit.js';
 import { TauriWindowControlsContribution } from './tauriWindowControls.js';
 import './tauriAssistant.js';
@@ -82,3 +83,4 @@ registerWorkbenchContribution2(TauriUpdatesContribution.ID, TauriUpdatesContribu
 registerWorkbenchContribution2(TauriMcpContribution.ID, TauriMcpContribution, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(TauriExtensionAuditContribution.ID, TauriExtensionAuditContribution, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(TauriWindowControlsContribution.ID, TauriWindowControlsContribution, WorkbenchPhase.BlockRestore);
+registerWorkbenchContribution2(TauriChatAgentContribution.ID, TauriChatAgentContribution, WorkbenchPhase.AfterRestored);
