@@ -55,7 +55,7 @@ const extensionsRoot = path.join(root, 'extensions');
 // Copilot is proprietary; the others are VS Code's own test extensions.
 const excludedExtensions = new Set(['copilot', 'vscode-api-tests', 'vscode-colorize-tests', 'vscode-colorize-perf-tests', 'vscode-test-resolver']);
 const keptSharedExtensionModules = new Set(['typescript']);
-const skipInExtensions = new Set(['src', 'test', '.vscode-test', '.vscode', 'build', 'cgmanifest.json', 'tsconfig.json', 'tsconfig.tsbuildinfo']);
+const skipInExtensions = new Set(['src', 'test', 'test-workspace', '.vscode-test', '.vscode', 'build', 'cgmanifest.json', 'tsconfig.json', 'tsconfig.tsbuildinfo']);
 fs.cpSync(extensionsRoot, path.join(appDir, 'extensions'), {
 	recursive: true,
 	filter: src => {
@@ -175,6 +175,74 @@ fs.chmodSync(target, 0o755);
 fs.copyFileSync(path.join(extracted, 'LICENSE'), path.join(nodeDir, 'LICENSE'));
 fs.rmSync(tmp, { recursive: true, force: true });
 log(`bundled Node ${nodeVersion} (${nodePlatform}-${arch}, sha256 verified)`);
+
+// --- drop native binaries built for other platforms ---------------------------
+// npm packages and extensions ship prebuilt binaries for every OS/arch (and musl).
+// They are dead weight in an installer for one target, and on Linux they break the
+// AppImage: linuxdeploy tries to resolve the libraries of every ELF file it finds.
+// Detected by file header, not by name: ELF (machine + musl), Mach-O, PE.
+const elfMachine = { x64: 0x3e, arm64: 0xb7 }[arch];
+const machoCpu = { x64: 0x01000007, arm64: 0x0100000c }[arch];
+const peMachine = { x64: 0x8664, arm64: 0xaa64 }[arch];
+function keepBinary(file, head) {
+	if (head.length >= 20 && head.readUInt32BE(0) === 0x7f454c46) { // ELF
+		if (platform !== 'linux') {
+			return false;
+		}
+		const machine = head[5] === 1 ? head.readUInt16LE(18) : head.readUInt16BE(18);
+		if (machine !== elfMachine) {
+			return false;
+		}
+		// musl builds need ld-musl/libc.musl, absent on glibc systems.
+		const data = fs.readFileSync(file);
+		return !data.includes('ld-musl-') && !data.includes('libc.musl-');
+	}
+	if (head.length >= 8 && [0xfeedfacf, 0xcffaedfe].includes(head.readUInt32BE(0))) { // Mach-O 64
+		const cpu = head.readUInt32BE(0) === 0xcffaedfe ? head.readUInt32LE(4) : head.readUInt32BE(4);
+		return platform === 'darwin' && cpu === machoCpu;
+	}
+	if (head.length >= 4 && head.readUInt32BE(0) === 0xcafebabe && /\.(node|dylib)$/.test(file)) { // universal Mach-O
+		return platform === 'darwin';
+	}
+	if (head.length >= 64 && head.readUInt16LE(0) === 0x5a4d && /\.(node|dll|exe)$/i.test(file)) { // PE
+		if (platform !== 'win32') {
+			return false;
+		}
+		const peOffset = head.readUInt32LE(60);
+		try {
+			const fd = fs.openSync(file, 'r');
+			const pe = Buffer.alloc(6);
+			fs.readSync(fd, pe, 0, 6, peOffset);
+			fs.closeSync(fd);
+			return pe.readUInt32BE(0) !== 0x50450000 || pe.readUInt16LE(4) === peMachine;
+		} catch {
+			return true;
+		}
+	}
+	return true; // not a native binary
+}
+let pruned = 0;
+let prunedBytes = 0;
+function pruneForeignBinaries(dir) {
+	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+		const p = path.join(dir, entry.name);
+		if (entry.isDirectory()) {
+			pruneForeignBinaries(p);
+		} else if (entry.isFile()) {
+			const fd = fs.openSync(p, 'r');
+			const head = Buffer.alloc(64);
+			const n = fs.readSync(fd, head, 0, 64, 0);
+			fs.closeSync(fd);
+			if (!keepBinary(p, head.subarray(0, n))) {
+				prunedBytes += fs.statSync(p).size;
+				fs.rmSync(p);
+				pruned++;
+			}
+		}
+	}
+}
+pruneForeignBinaries(appDir);
+log(`removed ${pruned} native binaries for other platforms (${(prunedBytes / 1024 / 1024).toFixed(0)} MB)`);
 
 const size = dir => fs.readdirSync(dir, { withFileTypes: true }).reduce((n, e) => n + (e.isDirectory() ? size(path.join(dir, e.name)) : fs.statSync(path.join(dir, e.name)).size), 0);
 log(`done: ${outDir} (${(size(outDir) / 1024 / 1024).toFixed(0)} MB)`);
