@@ -47,6 +47,8 @@ pub fn run() {
         .manage(services::pty::PtyState::default())
         // Node extension host bridge state (services/extension_host.rs).
         .manage(services::extension_host::ExtensionHostState::default())
+        // Muse gadget service state (services/muse.rs).
+        .manage(std::sync::Arc::new(services::muse::MuseState::default()))
         .setup(|app| {
             use tauri::Manager as _;
             // Where out/, extensions/ and node_modules/ live (repo in dev, bundle in release).
@@ -55,6 +57,9 @@ pub fn run() {
             app.manage(services::search::SearchState::default());
             // Filesystem watcher state (services/watcher.rs).
             services::watcher::init(app.handle());
+
+            // Muse: auto-connect the gadget link at startup when already paired.
+            services::muse::init_autoconnect(app.handle());
 
             // Main window. Optional first CLI arg = folder to open.
             let mut url = services::app_protocol::start_url();
@@ -151,6 +156,14 @@ pub fn run() {
             // --- command guardian ---
             services::guardian::guardian_assess,
             services::guardian::guardian_exec,
+            // --- muse gadget (Contract M) ---
+            services::muse::muse_status,
+            services::muse::muse_pair,
+            services::muse::muse_unpair,
+            services::muse::muse_connect,
+            services::muse::muse_set_commands,
+            services::muse::muse_send,
+            services::muse::muse_command_result,
         ])
         .build(tauri::generate_context!())
         .expect("error while building code-rs tauri application")

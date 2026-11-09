@@ -12,6 +12,7 @@ pub mod extension_audit;
 pub mod extension_install;
 pub mod fs;
 pub mod mcp;
+pub mod muse;
 pub mod pty;
 pub mod search;
 pub mod updater;
