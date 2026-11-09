@@ -5,7 +5,7 @@
 
 /* eslint-disable no-restricted-globals */
 
-import { getPartsSplashColors, getPartsSplashLayoutMetrics } from './partsSplash.js';
+import { getPartsSplashColors, getPartsSplashLayoutMetrics } from '../../browser/workbench/partsSplash.js';
 
 (async function () {
 

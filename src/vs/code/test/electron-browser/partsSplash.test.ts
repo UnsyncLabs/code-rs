@@ -8,7 +8,7 @@ import { mock } from '../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
 import { IPartsSplash } from '../../../platform/theme/common/themeService.js';
 import { ThemeTypeSelector } from '../../../platform/theme/common/theme.js';
-import { getPartsSplashColors, getPartsSplashLayoutMetrics } from '../../electron-browser/workbench/partsSplash.js';
+import { getPartsSplashColors, getPartsSplashLayoutMetrics } from '../../browser/workbench/partsSplash.js';
 
 suite('Parts splash layout', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();

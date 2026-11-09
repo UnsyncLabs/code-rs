@@ -145,6 +145,15 @@ fn render_workbench(root: &Path) -> Result<String, (StatusCode, String)> {
     for (k, v) in values {
         out = out.replace(&format!("{{{{{k}}}}}"), &v);
     }
+    // Paint the desktop-style layout skeleton before the (large) workbench
+    // module graph loads, so window reloads keep the layout on screen.
+    let workbench_script = format!(
+        r#"<script type="module" src="{STATIC_PREFIX}/out/vs/code/browser/workbench/workbench.js"></script>"#
+    );
+    let splash_script = format!(
+        r#"<script type="module" src="{STATIC_PREFIX}/out/vs/code/browser/workbench/tauriSplash.js"></script>"#
+    );
+    out = out.replacen(&workbench_script, &format!("{splash_script}\n\t{workbench_script}"), 1);
     Ok(out)
 }
 
