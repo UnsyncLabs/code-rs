@@ -8,7 +8,8 @@ import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle
 import { isAbsolute } from '../../../../base/common/path.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
-import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
@@ -250,7 +251,7 @@ export class TauriMcpContribution extends Disposable implements IWorkbenchContri
 				const folder = URI.file(String(args.path ?? ''));
 				await this.fileService.stat(folder);
 				defer(() => this.hostService.openWindow([{ folderUri: folder }], { forceReuseWindow: true }));
-				return { opening: this.toPath(folder), note: 'The window reloads; call window_list again in a few seconds.' };
+				return { opening: this.toPath(folder), note: 'Opened in place (no reload); the explorer updates in about 0.1 s.' };
 			}
 			case 'workspace_add_folder': {
 				const folder = URI.file(String(args.path ?? ''));
@@ -440,6 +441,9 @@ registerAction2(class extends Action2 {
 			title: localize2('codeRsMcpShowPanel', "Show MCP Panel (Connections, Approvals and Activity)"),
 			category: localize2('codeRsCategory', "code-rs"),
 			f1: true,
+			// Button to the right of the command center (title bar search box).
+			icon: Codicon.plug,
+			menu: { id: MenuId.CommandCenter, order: 10003 },
 			// Not used by any built-in VS Code keybinding.
 			keybinding: { weight: KeybindingWeight.WorkbenchContrib, primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyMod.Shift | KeyCode.KeyM },
 		});
@@ -471,7 +475,7 @@ registerAction2(class extends Action2 {
 				},
 			},
 			{ type: 'separator', label: localize('codeRsMcpApprovals', "Pending approvals") },
-			{ label: '$(check-all) ' + localize('codeRsMcpNoApprovals', "Nothing to approve"), description: localize('codeRsMcpNoApprovalsDesc', "AI tools can only read and show things for now") },
+			{ label: '$(check-all) ' + localize('codeRsMcpNoApprovals', "Nothing to approve"), description: localize('codeRsMcpNoApprovalsDesc', "Changes, installs and commands ask you in a dialog when an AI requests them") },
 			{ type: 'separator', label: localize('codeRsMcpActivity', "Recent activity (local audit log)") },
 			...(activity.length === 0
 				? [{ label: localize('codeRsMcpNoActivity', "No AI activity yet") }]

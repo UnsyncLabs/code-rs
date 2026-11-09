@@ -35,7 +35,6 @@
 // fail with a clear error if it is missing.
 //
 
-import { timeout } from '../../../../base/common/async.js';
 import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -464,21 +463,21 @@ export class TauriExtensionHost extends Disposable implements IExtensionHost {
 
 	public async disconnect(): Promise<void> {
 		this._terminating = true;
-		// Send Terminate so the extension host can run deactivation handlers.
+		// Send Terminate: the extension host runs the deactivation handlers and exits by
+		// itself. Do not wait for it (switching folders would pay for it); kill it only
+		// if it is still around after a grace period.
 		if (this._protocol) {
 			try {
 				this._protocol.send(createMessageOfType(MessageType.Terminate));
-				await timeout(100);
 			} catch {
 				// ignore — host may already be gone
 			}
 		}
-		if (this._hostId !== null) {
-			try {
-				await getTauri().invoke<void>('stop_extension_host', { id: this._hostId });
-			} catch {
-				// ignore
-			}
+		const hostId = this._hostId;
+		if (hostId !== null) {
+			setTimeout(() => {
+				getTauri().invoke<void>('stop_extension_host', { id: hostId }).catch(() => { /* already exited */ });
+			}, 5000);
 		}
 	}
 }

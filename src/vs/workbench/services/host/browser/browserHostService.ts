@@ -3,6 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { isTauri } from '../../../../platform/tauri/common/tauri.js';
+import { IWorkbenchLayoutService, Parts } from '../../layout/browser/layoutService.js';
+import { IPaneCompositePartService } from '../../panecomposite/browser/panecomposite.js';
+import { ViewContainerLocation } from '../../../common/views.js';
+import { switchWorkspaceInPlace } from '../../workspaces/browser/workspaceEditingService.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { IHostService, IToastOptions, IToastResult } from './host.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
@@ -486,6 +491,27 @@ export class BrowserHostService extends Disposable implements IHostService {
 	}
 
 	private async doOpen(workspace: IWorkspace, options?: { reuse?: boolean; payload?: object }): Promise<void> {
+
+		// code-rs (Tauri): switch folder/workspace in place instead of reloading the window.
+		if (isTauri() && options?.reuse && !(options.payload as unknown[] | undefined)?.length) {
+			const switched = await this.instantiationService.invokeFunction(async accessor => {
+				const layout = accessor.get(IWorkbenchLayoutService);
+				const panes = accessor.get(IPaneCompositePartService);
+				// The explorer's views depend on the workbench state (empty / folder), so the
+				// sidebar can close while they swap: restore what the user was looking at.
+				const sidebarVisible = layout.isVisible(Parts.SIDEBAR_PART);
+				const activeViewlet = panes.getActivePaneComposite(ViewContainerLocation.Sidebar)?.getId();
+				const done = await switchWorkspaceInPlace(accessor.get(IWorkspaceEditingService), workspace);
+				if (done && sidebarVisible) {
+					layout.setPartHidden(false, Parts.SIDEBAR_PART);
+					await panes.openPaneComposite(activeViewlet, ViewContainerLocation.Sidebar);
+				}
+				return done;
+			});
+			if (switched) {
+				return;
+			}
+		}
 
 		// When we are in a temporary workspace and are asked to open a local folder
 		// we swap that folder into the workspace to avoid a window reload. Access
