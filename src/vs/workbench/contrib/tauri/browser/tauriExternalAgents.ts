@@ -298,7 +298,9 @@ class ExternalAgentsProvider extends Disposable implements ILanguageModelChatPro
 		try {
 			antigravity = !!(await tauriInvoke<IAcpAgentInfo[]>('acp_agents')).find(a => a.id === 'antigravity')?.available;
 		} catch { /* ACP unavailable */ }
-		const entries = [{ id: 'muse', name: 'Muse (Meta)' }, ...(antigravity ? [{ id: 'antigravity', name: 'Antigravity (Google)' }] : [])];
+		// Muse through the user's own Muse account, with code-rs paired as a gadget
+		// (services/muse.rs). Muse via Meta's Model API is a regular provider (kind 'meta').
+		const entries = [{ id: 'muse', name: 'Muse (Meta, gadget)' }, ...(antigravity ? [{ id: 'antigravity', name: 'Antigravity (Google)' }] : [])];
 		return entries.map(m => ({
 			identifier: `${EXTERNAL_AGENTS_VENDOR}:${m.id}`,
 			metadata: {

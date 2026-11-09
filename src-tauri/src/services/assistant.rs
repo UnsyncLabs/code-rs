@@ -27,6 +27,8 @@ pub enum ProviderKind {
     Anthropic,
     Openai,
     Openrouter,
+    /// Meta Model API (Muse Spark), OpenAI-compatible: https://api.meta.ai/v1.
+    Meta,
     /// Any server speaking the OpenAI chat-completions API (Ollama, LM Studio, ...).
     OpenaiCompatible,
 }
@@ -68,6 +70,7 @@ fn base_url(p: &Provider) -> String {
         ProviderKind::Anthropic => "https://api.anthropic.com",
         ProviderKind::Openai => "https://api.openai.com/v1",
         ProviderKind::Openrouter => "https://openrouter.ai/api/v1",
+        ProviderKind::Meta => "https://api.meta.ai/v1",
         ProviderKind::OpenaiCompatible => "http://localhost:11434/v1",
     };
     p.base_url.clone().filter(|u| !u.trim().is_empty()).unwrap_or_else(|| default.to_string()).trim_end_matches('/').to_string()
@@ -615,6 +618,18 @@ pub async fn assistant_chat<R: Runtime>(
         input_tokens,
         output_tokens,
     })
+}
+
+#[cfg(test)]
+mod meta_tests {
+    use super::*;
+
+    #[test]
+    fn meta_uses_its_api_and_needs_https() {
+        let p = Provider { id: "m".into(), label: "Muse".into(), kind: ProviderKind::Meta, model: "muse-spark-1.3".into(), base_url: None };
+        assert_eq!(base_url(&p), "https://api.meta.ai/v1");
+        assert!(serde_json::to_string(&ProviderKind::Meta).unwrap().contains("meta"));
+    }
 }
 
 #[cfg(test)]

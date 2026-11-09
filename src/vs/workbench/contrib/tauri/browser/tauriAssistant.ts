@@ -31,7 +31,7 @@ const DAILY_LIMIT_SETTING = 'codeRs.assistant.dailyTokenLimit';
 const CONFIGURE_COMMAND = 'codeRs.assistant.configureProviders';
 const CODE_CONSENT_KEY = 'codeRs.assistant.codeConsent.';
 
-export type ProviderKind = 'anthropic' | 'openai' | 'openrouter' | 'openai-compatible';
+export type ProviderKind = 'anthropic' | 'openai' | 'openrouter' | 'meta' | 'openai-compatible';
 
 export interface IAssistantProvider {
 	readonly id: string;
@@ -185,6 +185,7 @@ const KINDS: { kind: ProviderKind; label: string; model: string; needsKey: boole
 	{ kind: 'anthropic', label: 'Anthropic (Claude)', model: 'claude-opus-5-5', needsKey: true },
 	{ kind: 'openai', label: 'OpenAI', model: '', needsKey: true },
 	{ kind: 'openrouter', label: 'OpenRouter', model: '', needsKey: true },
+	{ kind: 'meta', label: 'Meta (Muse)', model: 'muse-spark-1.3', needsKey: true },
 	{ kind: 'openai-compatible', label: localize('codeRsLocalKind', "Local / OpenAI-compatible (Ollama, LM Studio, ...)"), model: '', needsKey: false, baseUrl: 'http://localhost:11434/v1' },
 ];
 
