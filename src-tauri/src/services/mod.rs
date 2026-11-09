@@ -5,6 +5,7 @@
 //! signatures are in place and compile, but the bodies are `TODO`s.
 
 pub mod acp;
+pub mod acp_snapshot;
 pub mod app_protocol;
 pub mod assistant;
 pub mod guardian;

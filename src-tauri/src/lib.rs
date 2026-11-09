@@ -166,6 +166,10 @@ pub fn run() {
             services::acp::acp_stop,
             services::acp::acp_permission_result,
             services::acp::acp_fs_result,
+            services::acp::acp_set_mode,
+            services::acp_snapshot::acp_snapshot,
+            services::acp_snapshot::acp_snapshot_read,
+            services::acp_snapshot::acp_snapshot_drop,
             // --- muse gadget (Contract M) ---
             services::muse::muse_status,
             services::muse::muse_pair,

@@ -22,7 +22,10 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IWorkbenchContribution } from '../../../common/contributions.js';
 import { nullExtensionDescription } from '../../../services/extensions/common/extensions.js';
 import { IChatAgentHistoryEntry, IChatAgentRequest, IChatAgentResult } from '../../chat/common/participants/chatAgents.js';
-import { IChatProgress } from '../../chat/common/chatService/chatService.js';
+import { ChatMultiDiffData, IChatProgress, IMultiDiffResource } from '../../chat/common/chatService/chatService.js';
+import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IChatMessage, ILanguageModelChatMetadataAndIdentifier, ILanguageModelChatProvider, ILanguageModelChatResponse, ILanguageModelsService } from '../../chat/common/languageModels.js';
 import { IAgentToolHost, IAgentToolHostService } from './tauriAgentTools.js';
 import { ITauriApprovalService } from './tauriApprovals.js';
@@ -42,6 +45,47 @@ export const EXTERNAL_AGENTS_VENDOR = 'code-rs-agents';
 const PAIR_COMMAND = 'codeRs.muse.pair';
 const UNPAIR_COMMAND = 'codeRs.muse.unpair';
 const SDK_TOKENS_URL = 'https://gadgets.muse.ai/settings/sdk-tokens';
+/** Ask in code-rs for every agent action, overriding the agent's own approval settings. */
+const APPROVALS_IN_IDE_SETTING = 'codeRs.agents.approvalsInIde';
+
+if (isTauri()) {
+	Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+		id: 'codeRsAgents',
+		order: 20,
+		title: localize('codeRsAgentsTitle', "External AI Agents"),
+		type: 'object',
+		properties: {
+			[APPROVALS_IN_IDE_SETTING]: {
+				type: 'boolean',
+				default: false,
+				scope: ConfigurationScope.APPLICATION,
+				markdownDescription: localize('codeRsAgentsApprovals', "Ask in code-rs before external agents (Claude Code, Kiro, Antigravity) edit files or run commands, even when the agent's own settings auto-approve them. Off: the agent's own approval mode decides, and its approval requests appear in the chat."),
+			},
+		}
+	});
+}
+
+/** Lines added / removed between two texts (multiset of lines: good enough for a summary). */
+function lineDelta(before: string, after: string): { added: number; removed: number } {
+	const count = new Map<string, number>();
+	for (const l of before.split(/\r?\n/)) {
+		count.set(l, (count.get(l) ?? 0) + 1);
+	}
+	let added = 0;
+	for (const l of after.split(/\r?\n/)) {
+		const n = count.get(l) ?? 0;
+		if (n > 0) {
+			count.set(l, n - 1);
+		} else {
+			added++;
+		}
+	}
+	let removed = 0;
+	for (const n of count.values()) {
+		removed += n;
+	}
+	return { added, removed };
+}
 
 interface ITauriEventGlobal {
 	__TAURI__?: { event?: { listen<T>(event: string, handler: (e: { payload: T }) => void): Promise<() => void> } };
@@ -110,6 +154,13 @@ class AgentEditPreview extends Disposable {
 		}));
 	}
 
+	/** A read-only document holding `text` for the file at `path` (e.g. its content before a turn). */
+	textUri(path: string, text: string): URI {
+		const key = generateUuid();
+		this.texts.set(key, text);
+		return URI.from({ scheme: AgentEditPreview.SCHEME, path: URI.file(path).path, query: key });
+	}
+
 	/** Computes the proposed file from an ACP tool call and opens original <-> proposed. */
 	async show(call: IAcpToolCall | undefined, agent: string): Promise<boolean> {
 		const input = call?.rawInput ?? {};
@@ -162,8 +213,13 @@ export class ExternalAgentRouter extends Disposable {
 		private readonly approvals: ITauriApprovalService,
 		private readonly fileService: IFileService,
 		private readonly contextService: IWorkspaceContextService,
+		private readonly configurationService: IConfigurationService,
 	) {
 		super();
+	}
+
+	private get approvalsInIde(): boolean {
+		return this.configurationService.getValue<boolean>(APPROVALS_IN_IDE_SETTING) === true;
 	}
 
 	async invoke(request: IChatAgentRequest, progress: (parts: IChatProgress[]) => void, _history: IChatAgentHistoryEntry[], token: CancellationToken): Promise<IChatAgentResult> {
@@ -261,6 +317,14 @@ export class ExternalAgentRouter extends Disposable {
 		if (!session) {
 			const cwd = this.contextService.getWorkspace().folders[0]?.uri.fsPath;
 			const acpId = await tauriInvoke<string>('acp_start', { agentId, cwd });
+			if (this.approvalsInIde) {
+				// Switch the agent to its mode that asks before edits and commands, when it has one.
+				for (const modeId of ['default', 'ask', 'manual']) {
+					if (await tauriInvoke('acp_set_mode', { sessionId: acpId, modeId }).then(() => true, () => false)) {
+						break;
+					}
+				}
+			}
 			session = { acpId, label: agent.label };
 			this.acpSessions.set(key, session);
 			this.acpById.set(acpId, session);
@@ -268,11 +332,60 @@ export class ExternalAgentRouter extends Disposable {
 		const active = session;
 		active.progress = progress;
 		const cancel = token.onCancellationRequested(() => { tauriInvoke('acp_cancel', { sessionId: active.acpId }).catch(() => { }); });
+		// Track what the turn changes, however the agent changes it (its own shell included).
+		const root = this.contextService.getWorkspace().folders[0]?.uri;
+		const snapshot = root ? await tauriInvoke<number>('acp_snapshot', { root: root.fsPath }).catch(() => undefined) : undefined;
+		const changed = new Map<string, URI>();
+		const watch = snapshot === undefined || !root ? undefined : this.fileService.onDidFilesChange(e => {
+			for (const uri of [...e.rawAdded, ...e.rawUpdated, ...e.rawDeleted]) {
+				if (isEqualOrParent(uri.fsPath, root.fsPath, true) && !/[\\/]\.git([\\/]|$)/.test(uri.fsPath)) {
+					changed.set(uri.fsPath.toLowerCase(), uri);
+				}
+			}
+		});
 		try {
 			await tauriInvoke('acp_prompt', { sessionId: active.acpId, text: request.message });
 		} finally {
 			cancel.dispose();
+			if (watch && snapshot !== undefined) {
+				await new Promise(r => setTimeout(r, 400)); // let the last watcher events arrive
+				watch.dispose();
+				await this.reportChanges(progress, snapshot, [...changed.values()], active.label).catch(err => console.error('[code-rs] agent change summary failed', err));
+				tauriInvoke('acp_snapshot_drop', { id: snapshot }).catch(() => { });
+			}
 			active.progress = undefined;
+		}
+	}
+
+	/** Lists the files a turn changed in the chat; clicking one opens its diff. */
+	private async reportChanges(progress: (parts: IChatProgress[]) => void, snapshot: number, uris: URI[], label: string): Promise<void> {
+		const resources: IMultiDiffResource[] = [];
+		for (const uri of uris.sort((a, b) => a.fsPath.localeCompare(b.fsPath))) {
+			const before = await tauriInvoke<string | null>('acp_snapshot_read', { id: snapshot, path: uri.fsPath }).catch(() => null);
+			let after: string | undefined;
+			try {
+				after = (await this.fileService.readFile(uri)).value.toString();
+			} catch { /* deleted */ }
+			if (before === after || (before === null && after === undefined)) {
+				continue;
+			}
+			const lines = (t: string) => t.split(/\r?\n/).length;
+			const delta = before === null ? { added: lines(after ?? ''), removed: 0 }
+				: after === undefined ? { added: 0, removed: lines(before) }
+					: lineDelta(before, after);
+			resources.push({
+				originalUri: before !== null ? this.preview.textUri(uri.fsPath, before) : undefined,
+				modifiedUri: after !== undefined ? uri : undefined,
+				goToFileUri: after !== undefined ? uri : undefined,
+				added: delta.added,
+				removed: delta.removed,
+			});
+		}
+		if (resources.length) {
+			progress([new ChatMultiDiffData({
+				multiDiffData: { title: localize('codeRsAgentChanges', "Changes by {0}", label), resources },
+				readOnly: true,
+			})]);
 		}
 	}
 
@@ -341,13 +454,18 @@ export class ExternalAgentRouter extends Disposable {
 				}
 				return answer({ ok: true, content });
 			}
-			const choice = await this.approvals.request({
-				client: label, tool: 'fs/write_text_file', level: 2,
-				title: localize('codeRsAcpWriteTitle', "{0} wants to write a file", label),
-				detail: new MarkdownString('`' + e.path + '`'),
-			});
-			if (choice === 'deny') {
-				return answer({ ok: false, error: 'The user denied the write.' });
+			// The agent's own approval mode already decided (asking through
+			// session/request_permission when needed); ask again only when the user wants
+			// every action approved in code-rs.
+			if (this.approvalsInIde) {
+				const choice = await this.approvals.request({
+					client: label, tool: 'fs/write_text_file', level: 2,
+					title: localize('codeRsAcpWriteTitle', "{0} wants to write a file", label),
+					detail: new MarkdownString('`' + e.path + '`'),
+				});
+				if (choice === 'deny') {
+					return answer({ ok: false, error: 'The user denied the write.' });
+				}
 			}
 			await this.fileService.writeFile(uri, VSBuffer.fromString(e.content ?? ''));
 			return answer({ ok: true });
@@ -435,6 +553,7 @@ export class TauriExternalAgentsContribution extends Disposable implements IWork
 		@IModelService modelService: IModelService,
 		@ILanguageService languageService: ILanguageService,
 		@IEditorService editorService: IEditorService,
+		@IConfigurationService configurationService: IConfigurationService,
 	) {
 		super();
 		if (!isTauri()) {
@@ -447,7 +566,7 @@ export class TauriExternalAgentsContribution extends Disposable implements IWork
 		this._register(languageModelsService.registerLanguageModelProvider(EXTERNAL_AGENTS_VENDOR, provider));
 		provider.refresh();
 		const preview = this._register(new AgentEditPreview(textModelService, modelService, languageService, editorService, fileService));
-		router = this._register(new ExternalAgentRouter(preview, toolHost, approvals, fileService, contextService));
+		router = this._register(new ExternalAgentRouter(preview, toolHost, approvals, fileService, contextService, configurationService));
 		this._register(toDisposable(() => { router = undefined; }));
 	}
 }

@@ -451,6 +451,23 @@ pub async fn acp_prompt(
         .map_err(RpcError::into_string)
 }
 
+/// `session/set_mode`: switch the agent's own approval mode (e.g. Claude Code's
+/// "default", which asks before edits and commands). Errors when the agent has no
+/// such mode.
+#[tauri::command]
+pub async fn acp_set_mode(
+    state: State<'_, AcpState>,
+    session_id: String,
+    mode_id: String,
+) -> Result<(), String> {
+    let session = get_session(&state, &session_id).await?;
+    let params = json!({ "sessionId": session_id, "modeId": mode_id });
+    request(&session, "session/set_mode", params)
+        .await
+        .map(|_| ())
+        .map_err(RpcError::into_string)
+}
+
 /// Send a `session/cancel` notification (fire and forget; the in-flight
 /// `session/prompt` will resolve with the `cancelled` stop reason).
 #[tauri::command]
