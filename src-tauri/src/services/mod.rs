@@ -6,6 +6,7 @@
 
 pub mod app_protocol;
 pub mod extension_host;
+pub mod extension_audit;
 pub mod extension_install;
 pub mod fs;
 pub mod mcp;

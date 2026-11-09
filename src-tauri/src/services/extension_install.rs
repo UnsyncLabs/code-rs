@@ -28,35 +28,94 @@ pub struct InstallVsixRequest {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallVsixResult {
-    /// Absolute path of the extracted extension folder.
+    /// Absolute path of the installed extension folder.
     pub path: String,
 }
 
-/// Downloads a VSIX from the gallery and extracts it. Returns the folder.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuarantineResult {
+    /// Folder name inside the quarantine; pass it to commit or discard.
+    pub quarantine_id: String,
+    pub report: super::extension_audit::AuditReport,
+}
+
+/// Downloads a VSIX into the quarantine folder (not registered anywhere) and
+/// returns its security report. Every gallery install or update goes through
+/// here; nothing is installed until `extension_quarantine_commit`.
 #[tauri::command]
-pub async fn extension_install_vsix<R: Runtime>(
+pub async fn extension_quarantine_vsix<R: Runtime>(
     app: AppHandle<R>,
     request: InstallVsixRequest,
-) -> Result<InstallVsixResult, String> {
+) -> Result<QuarantineResult, String> {
     let url = request.url.clone();
-    if !(url.starts_with("https://")) {
+    if !url.starts_with("https://") {
         return Err(format!("refusing non-https extension download: {url}"));
     }
-    let folder_name = sanitize(&format!("{}-{}", request.id.to_lowercase(), request.version));
+    let id = request.id.to_lowercase();
+    let folder_name = sanitize(&format!("{id}-{}", request.version));
     let root = extensions_dir(&app)?;
-    let target = root.join(&folder_name);
+    let quarantine = quarantine_dir(&app)?.join(&folder_name);
 
-    tauri::async_runtime::spawn_blocking(move || -> Result<InstallVsixResult, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<QuarantineResult, String> {
         let bytes = download(&url)?;
-        let staging = root.join(format!(".{folder_name}.installing"));
-        let _ = std::fs::remove_dir_all(&staging);
-        extract_extension_folder(&bytes, &staging)?;
-        let _ = std::fs::remove_dir_all(&target);
-        std::fs::rename(&staging, &target).map_err(|e| format!("rename: {e}"))?;
-        Ok(InstallVsixResult { path: target.to_string_lossy().into_owned() })
+        let sha256 = sha256_hex(&bytes);
+        let _ = std::fs::remove_dir_all(&quarantine);
+        extract_extension_folder(&bytes, &quarantine)?;
+        // Currently installed version of the same extension, for the diff.
+        let prefix = format!("{id}-");
+        let previous = std::fs::read_dir(&root).ok().and_then(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .filter(|p| {
+                    let n = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+                    n.starts_with(&prefix) && n != folder_name
+                })
+                .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+        });
+        let report = super::extension_audit::audit(&quarantine, previous.as_deref(), &url, &sha256, bytes.len() as u64)?;
+        Ok(QuarantineResult { quarantine_id: folder_name, report })
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Moves an approved extension from the quarantine into the extensions folder.
+#[tauri::command]
+pub async fn extension_quarantine_commit<R: Runtime>(app: AppHandle<R>, quarantine_id: String) -> Result<InstallVsixResult, String> {
+    let name = sanitize(&quarantine_id);
+    let source = quarantine_dir(&app)?.join(&name);
+    if !source.join("package.json").is_file() {
+        return Err("quarantined extension not found".into());
+    }
+    let target = extensions_dir(&app)?.join(&name);
+    let _ = std::fs::remove_dir_all(&target);
+    std::fs::rename(&source, &target).map_err(|e| format!("rename: {e}"))?;
+    Ok(InstallVsixResult { path: target.to_string_lossy().into_owned() })
+}
+
+/// Deletes a quarantined extension that was rejected (or only audited).
+#[tauri::command]
+pub async fn extension_quarantine_discard<R: Runtime>(app: AppHandle<R>, quarantine_id: String) -> Result<(), String> {
+    let path = quarantine_dir(&app)?.join(sanitize(&quarantine_id));
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn quarantine_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("extension-quarantine");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Removes an installed extension folder (only inside the extensions dir).

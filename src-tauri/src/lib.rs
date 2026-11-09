@@ -117,7 +117,9 @@ pub fn run() {
             services::extension_host::stop_extension_host,
             services::extension_host::exthost_write,
             services::extension_host::exthost_paths,
-            services::extension_install::extension_install_vsix,
+            services::extension_install::extension_quarantine_vsix,
+            services::extension_install::extension_quarantine_commit,
+            services::extension_install::extension_quarantine_discard,
             services::extension_install::extension_uninstall_folder,
             services::extension_install::host_target_platform,
             // --- updates ---

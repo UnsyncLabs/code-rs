@@ -22,7 +22,8 @@ import { compare } from '../../../../base/common/strings.js';
 import { IUserDataProfilesService } from '../../../../platform/userDataProfile/common/userDataProfile.js';
 import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
-import { isTauri, tauriInvoke } from '../../../../platform/tauri/common/tauri.js';
+import { ITauriExtensionAuditReport, isTauri, reviewTauriExtension, tauriInvoke } from '../../../../platform/tauri/common/tauri.js';
+import { CancellationError } from '../../../../base/common/errors.js';
 import { Schemas } from '../../../../base/common/network.js';
 
 export class WebExtensionManagementService extends AbstractExtensionManagementService implements IProfileAwareExtensionManagementService {
@@ -338,11 +339,18 @@ class InstallExtensionTask extends AbstractExtensionTask<ILocalExtension> implem
 		if (URI.isUri(this.extension)) {
 			scannedExtension = await this.webExtensionsScannerService.addExtension(this.extension, metadata, this.profileLocation);
 		} else if (isTauri()) {
-			// code-rs: download and extract the VSIX to disk (Rust) and register the
-			// folder, so the extension can run in the Node extension host.
-			const { path } = await tauriInvoke<{ path: string }>('extension_install_vsix', {
+			// code-rs: the VSIX is downloaded into a quarantine folder (Rust), audited,
+			// and only installed once the review approves it. Then the folder is
+			// registered so the extension can run in the Node extension host.
+			const { quarantineId, report } = await tauriInvoke<{ quarantineId: string; report: ITauriExtensionAuditReport }>('extension_quarantine_vsix', {
 				request: { url: this.extension.assets.download.uri, id: this.extension.identifier.id, version: this.extension.version },
 			});
+			const approved = await reviewTauriExtension(report, !!existingExtension);
+			if (!approved || token.isCancellationRequested) {
+				await tauriInvoke('extension_quarantine_discard', { quarantineId });
+				throw new CancellationError();
+			}
+			const { path } = await tauriInvoke<{ path: string }>('extension_quarantine_commit', { quarantineId });
 			scannedExtension = await this.webExtensionsScannerService.addExtension(URI.file(path), metadata, this.profileLocation);
 		} else {
 			scannedExtension = await this.webExtensionsScannerService.addExtensionFromGallery(this.extension, metadata, this.profileLocation);

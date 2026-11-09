@@ -20,7 +20,7 @@ import { IMarkerService, MarkerSeverity } from '../../../../platform/markers/com
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem, IQuickPickSeparator } from '../../../../platform/quickinput/common/quickInput.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
-import { isTauri, tauriInvoke } from '../../../../platform/tauri/common/tauri.js';
+import { isTauri, ITauriExtensionAuditReport, tauriInvoke } from '../../../../platform/tauri/common/tauri.js';
 import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
@@ -30,6 +30,8 @@ import { IHostService } from '../../../services/host/browser/host.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../services/statusbar/browser/statusbar.js';
 import { IWorkspaceEditingService } from '../../../services/workspaces/common/workspaceEditing.js';
 import { isCodeEditor } from '../../../../editor/browser/editorBrowser.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { IExtensionGalleryService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 
 /**
  * code-rs MCP server, workbench side (design: docs/rust-rewrite/MCP_DESIGN.md, phase 1).
@@ -109,6 +111,7 @@ export class TauriMcpContribution extends Disposable implements IWorkbenchContri
 		@IWorkspaceEditingService private readonly workspaceEditingService: IWorkspaceEditingService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IStatusbarService private readonly statusbarService: IStatusbarService,
+		@IExtensionGalleryService private readonly galleryService: IExtensionGalleryService,
 	) {
 		super();
 		if (!isTauri()) {
@@ -288,6 +291,20 @@ export class TauriMcpContribution extends Disposable implements IWorkbenchContri
 					line: m.startLineNumber, column: m.startColumn, source: m.source ?? null,
 					code: typeof m.code === 'object' ? m.code.value : m.code ?? null,
 				}));
+			}
+			case 'extensions_audit': {
+				const id = String(args.id ?? '');
+				const version = typeof args.version === 'string' ? args.version : undefined;
+				const [gallery] = await this.galleryService.getExtensions([{ id, version }], CancellationToken.None);
+				if (!gallery) {
+					throw new Error(`Extension ${id}${version ? '@' + version : ''} not found on Open VSX.`);
+				}
+				// Audit in quarantine, then discard: nothing is installed.
+				const { quarantineId, report } = await tauriInvoke<{ quarantineId: string; report: ITauriExtensionAuditReport }>('extension_quarantine_vsix', {
+					request: { url: gallery.assets.download.uri, id: gallery.identifier.id, version: gallery.version },
+				});
+				await tauriInvoke('extension_quarantine_discard', { quarantineId });
+				return report;
 			}
 			case 'ui_notify': {
 				const sev = args.severity === 'error' ? Severity.Error : args.severity === 'warning' ? Severity.Warning : Severity.Info;

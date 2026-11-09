@@ -105,3 +105,44 @@ export async function tauriShowSaveDialog(options: Omit<ITauriOpenDialogOptions,
 	const result = await tauriInvoke<string | null>('plugin:dialog|save', { options });
 	return result ?? undefined;
 }
+
+//#region Extension security review (design: docs/rust-rewrite/MCP_DESIGN.md §6)
+
+export type TauriAuditSeverity = 'info' | 'low' | 'medium' | 'high';
+
+/** Security report produced by Rust (`extension_audit.rs`) for a quarantined extension. */
+export interface ITauriExtensionAuditReport {
+	readonly id: string;
+	readonly version: string;
+	readonly displayName?: string;
+	readonly sourceUrl: string;
+	readonly sha256: string;
+	readonly packageSize: number;
+	readonly fileCount: number;
+	readonly main?: string;
+	readonly browser?: string;
+	readonly activationEvents: string[];
+	readonly publisher: { namespace: string; verified?: boolean; publishedBy?: string; versionTimestamp?: string; downloadCount?: number };
+	readonly capabilities: { childProcess: string[]; dynamicCode: string[]; network: string[]; nativeBinaries: string[]; scripts: string[]; obfuscated: string[]; encodedData: string[] };
+	readonly domains: string[];
+	readonly diff?: { previousVersion: string; addedFiles: number; removedFiles: number; newNativeBinaries: string[]; newDomains: string[]; newCapabilities: string[]; publisherChanged: boolean };
+	readonly findings: { severity: TauriAuditSeverity; title: string; detail: string }[];
+	readonly risk: TauriAuditSeverity;
+	readonly disclaimer: string;
+}
+
+export type TauriExtensionReviewHandler = (report: ITauriExtensionAuditReport, isUpdate: boolean) => Promise<boolean>;
+
+let extensionReviewHandler: TauriExtensionReviewHandler | undefined;
+
+/** Registered by the workbench (dialog with the report and the user's decision). */
+export function setTauriExtensionReviewHandler(handler: TauriExtensionReviewHandler | undefined): void {
+	extensionReviewHandler = handler;
+}
+
+/** Asks for approval of a quarantined extension. Denies when no reviewer is registered. */
+export function reviewTauriExtension(report: ITauriExtensionAuditReport, isUpdate: boolean): Promise<boolean> {
+	return extensionReviewHandler ? extensionReviewHandler(report, isUpdate) : Promise.resolve(false);
+}
+
+//#endregion
