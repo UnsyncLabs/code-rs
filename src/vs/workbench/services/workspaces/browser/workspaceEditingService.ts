@@ -24,6 +24,10 @@ import { IWorkbenchConfigurationService } from '../../configuration/common/confi
 import { IUserDataProfilesService } from '../../../../platform/userDataProfile/common/userDataProfile.js';
 import { IUserDataProfileService } from '../../userDataProfile/common/userDataProfile.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IExtensionService } from '../../extensions/common/extensions.js';
+import { IStorageService } from '../../../../platform/storage/common/storage.js';
+import { isTauri } from '../../../../platform/tauri/common/tauri.js';
+import { localize } from '../../../../nls.js';
 
 export class BrowserWorkspaceEditingService extends AbstractWorkspaceEditingService {
 
@@ -45,11 +49,17 @@ export class BrowserWorkspaceEditingService extends AbstractWorkspaceEditingServ
 		@IUserDataProfilesService userDataProfilesService: IUserDataProfilesService,
 		@IUserDataProfileService userDataProfileService: IUserDataProfileService,
 		@ILogService logService: ILogService,
+		@IExtensionService private readonly extensionService: IExtensionService,
+		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super(jsonEditingService, contextService, configurationService, notificationService, commandService, fileService, textFileService, workspacesService, environmentService, fileDialogService, dialogService, hostService, uriIdentityService, workspaceTrustManagementService, userDataProfilesService, userDataProfileService, logService);
 	}
 
 	async enterWorkspace(workspaceUri: URI): Promise<void> {
+		if (isTauri()) {
+			return this.enterWorkspaceInPlace(workspaceUri);
+		}
+
 		const oldWorkspace = toWorkspaceIdentifier(this.contextService.getWorkspace());
 		const result = await this.doEnterWorkspace(workspaceUri);
 		if (result) {
@@ -61,6 +71,42 @@ export class BrowserWorkspaceEditingService extends AbstractWorkspaceEditingServ
 			// Open workspace in same window
 			await this.hostService.openWindow([{ workspaceUri }], { forceReuseWindow: true });
 		}
+	}
+
+	/**
+	 * code-rs (Tauri): enter a multi-root workspace without reloading the window,
+	 * the way the desktop build does (see electron-browser/workspaceEditingService.ts):
+	 * stop the extension hosts, switch the workspace and its storage in place,
+	 * then restart the extension hosts.
+	 */
+	private async enterWorkspaceInPlace(workspaceUri: URI): Promise<void> {
+		const stopped = await this.extensionService.stopExtensionHosts(localize('restartExtensionHost.reason', "Opening a multi-root workspace"));
+		if (!stopped) {
+			return;
+		}
+
+		try {
+			const oldWorkspace = toWorkspaceIdentifier(this.contextService.getWorkspace());
+			const result = await this.doEnterWorkspace(workspaceUri);
+			if (result) {
+				// Migrate storage to the new workspace
+				await this.storageService.switch(result.workspace, true /* preserve data */);
+
+				// Fire event to allow participants to join
+				await this.fireDidEnterWorkspace(oldWorkspace, result.workspace);
+			}
+		} catch (error) {
+			try {
+				await this.extensionService.startExtensionHosts();
+			} catch (restartError) {
+				this.logService.error(restartError);
+			}
+			throw error;
+		}
+
+		// Entering a workspace means a new storage location and a possibly
+		// different `workspace.rootPath`, so restart the extension hosts.
+		this.extensionService.startExtensionHosts();
 	}
 }
 
