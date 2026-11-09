@@ -6,6 +6,7 @@
 import './media/tauriTitlebar.css';
 import { $, addDisposableListener, append, EventType } from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
+import { timeout } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -52,9 +53,19 @@ export class TauriWindowControlsContribution extends Disposable implements IWork
 		if (!await tauriInvoke<boolean>('window_has_custom_frame')) {
 			return;
 		}
-		const titlebar = this.layoutService.getContainer(mainWindow, Parts.TITLEBAR_PART);
-		// eslint-disable-next-line no-restricted-syntax
-		const container = titlebar?.querySelector<HTMLElement>('.titlebar-right .window-controls-container');
+		// The title bar may not be rendered yet (slow starts, e.g. the unbundled dev build):
+		// wait for it instead of giving up, or the window would have no controls at all.
+		let titlebar: HTMLElement | undefined;
+		let container: HTMLElement | null | undefined;
+		for (let attempt = 0; attempt < 300 && !this._store.isDisposed; attempt++) {
+			titlebar = this.layoutService.getContainer(mainWindow, Parts.TITLEBAR_PART);
+			// eslint-disable-next-line no-restricted-syntax
+			container = titlebar?.querySelector<HTMLElement>('.titlebar-right .window-controls-container');
+			if (titlebar && container) {
+				break;
+			}
+			await timeout(50);
+		}
 		if (!titlebar || !container) {
 			return;
 		}

@@ -141,6 +141,7 @@ export class TauriApprovalService extends Disposable implements ITauriApprovalSe
 		if (!root) {
 			return undefined;
 		}
+		// eslint-disable-next-line no-restricted-syntax -- the chat input belongs to the chat view; no handle is exposed
 		return root.querySelector<HTMLElement>('.interactive-input-part') ?? undefined;
 	}
 
@@ -148,6 +149,7 @@ export class TauriApprovalService extends Disposable implements ITauriApprovalSe
 	private showCard(entry: IPendingApproval, inputContainer: HTMLElement): void {
 		// Reuse one host element right before the chat input; cards stack inside it.
 		const parent = inputContainer.parentElement ?? inputContainer;
+		// eslint-disable-next-line no-restricted-syntax -- our own host element, created below on first use
 		let host = parent.querySelector<HTMLElement>(':scope > .tauri-approvals-host');
 		if (!host) {
 			host = dom.$('.tauri-approvals-host');

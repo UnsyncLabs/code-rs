@@ -7,7 +7,6 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { MarkdownString } from '../../../../base/common/htmlContent.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import Severity from '../../../../base/common/severity.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IBulkEditService, ResourceFileEdit, ResourceTextEdit } from '../../../../editor/browser/services/bulkEditService.js';
@@ -29,6 +28,7 @@ import { isTauri, tauriInvoke } from '../../../../platform/tauri/common/tauri.js
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { IWorkbenchExtensionEnablementService, IWorkbenchExtensionManagementService } from '../../../services/extensionManagement/common/extensionManagement.js';
 import { complete, submitExtensionReview } from './tauriAssistant.js';
+import { ITauriApprovalService } from './tauriApprovals.js';
 
 /**
  * MCP tools that change things (design: MCP_DESIGN.md §4–5, §7b; phases 4 and 5).
@@ -127,6 +127,7 @@ export class TauriMcpWriteTools extends Disposable {
 		@IWorkbenchExtensionManagementService private readonly extensionManagementService: IWorkbenchExtensionManagementService,
 		@IWorkbenchExtensionEnablementService private readonly enablementService: IWorkbenchExtensionEnablementService,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
+		@ITauriApprovalService private readonly approvalService: ITauriApprovalService,
 	) {
 		super();
 		// Read-only documents holding proposed content, for the diff editor.
@@ -147,34 +148,18 @@ export class TauriMcpWriteTools extends Disposable {
 		if (level === 2 && this.sessionAllowed.has(tool)) {
 			return true;
 		}
-		type Choice = 'once' | 'session' | 'deny' | 'unchecked';
-		// High risk: Allow only works with the checkbox ticked, so a stray Enter cannot run it.
-		const buttons: { label: string; run: (c: { checkboxChecked?: boolean }) => Choice }[] = [{
-			label: highRisk ? localize('codeRsMcpRunAnyway', "Run Anyway") : localize('codeRsMcpAllow', "Allow"),
-			run: c => !highRisk || c.checkboxChecked ? 'once' : 'unchecked',
-		}];
-		if (level === 2) {
-			buttons.push({ label: localize('codeRsMcpAllowSession', "Allow for This Session"), run: () => 'session' });
-		}
-		const { result } = await this.dialogService.prompt<Choice>({
-			type: level === 3 ? Severity.Warning : Severity.Info,
-			message,
-			detail: typeof detail === 'string' ? detail : undefined,
-			buttons,
-			cancelButton: { label: localize('codeRsMcpDeny', "Deny"), run: () => 'deny' },
-			checkbox: highRisk ? { label: localize('codeRsMcpUnderstand', "I understand the risk and want to run it"), checked: false } : undefined,
-			custom: {
-				markdownDetails: [
-					{ markdown: new MarkdownString(localize('codeRsMcpRequestedBy', "Requested by MCP client: **{0}** · tool `{1}`", clientName(client), tool)) },
-					...(detail instanceof MarkdownString ? [{ markdown: detail }] : []),
-				]
-			},
+		// Shown as a card in the agent chat when it is open, otherwise as a modal dialog
+		// (tauriApprovals.ts). High risk needs the "I understand the risk" checkbox.
+		const result = await this.approvalService.request({
+			client: clientName(client),
+			tool,
+			level,
+			title: message,
+			detail: typeof detail === 'string' ? new MarkdownString().appendText(detail) : detail,
+			highRisk,
 		});
 		if (result === 'session') {
 			this.sessionAllowed.add(tool);
-		}
-		if (result === 'unchecked') {
-			throw new Error('The user did not confirm this high risk command (the confirmation checkbox was not ticked).');
 		}
 		if (result !== 'once' && result !== 'session') {
 			throw new Error('The user denied this request.');
