@@ -303,9 +303,16 @@ pena y para que el usuario confirme lo peligroso.
   `alwaysConfirmHighRisk`, guardián capa 1 (reglas, con tests) y capa 3 (LLM opcional,
   `codeRs.mcp.guardian.llmProvider`), `ui_ask`, prompts MCP y la skill
   (`packaging/claude-skill/code-rs/SKILL.md`).
-- Pendiente de la fase 5: suscripciones a eventos (requiere el stream SSE del servidor),
-  "Pedir a la IA…" (`notifications/message`), y la capa 2 (micro-clasificador o Laya): no se
-  adopta hasta medir recursos y precisión con un conjunto de comandos etiquetados.
+- Eventos: stream SSE en Rust (`GET /mcp`), reenviado por el puente stdio. Se envían
+  `file-saved`, `extension-installed`/`-uninstalled`/`-install-failed`,
+  `workspace-folders-changed` y `user-message` como `notifications/message`.
+- "Ask the AI (MCP)…": el mensaje (con archivo y selección) llega como notificación y queda
+  en una bandeja que la IA lee con `user_messages` (muchos clientes no muestran
+  notificaciones al modelo).
+- Comandos de riesgo alto: "Run Anyway" solo funciona con la casilla "I understand the risk"
+  marcada, para que un Enter accidental no los ejecute.
+- Pendiente (más adelante): capa 2 (micro-clasificador o Laya), solo si hace falta y tras
+  medir recursos y precisión.
 
 ## 11. Decisiones tomadas
 

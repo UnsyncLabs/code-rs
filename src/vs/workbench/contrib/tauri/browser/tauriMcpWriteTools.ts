@@ -143,12 +143,16 @@ export class TauriMcpWriteTools extends Disposable {
 	}
 
 	/** Asks the user. Level 2 offers "allow for this session"; level 3 always asks. */
-	private async confirm(client: string, tool: string, level: 2 | 3, message: string, detail?: string | MarkdownString): Promise<boolean> {
+	private async confirm(client: string, tool: string, level: 2 | 3, message: string, detail?: string | MarkdownString, highRisk = false): Promise<boolean> {
 		if (level === 2 && this.sessionAllowed.has(tool)) {
 			return true;
 		}
-		type Choice = 'once' | 'session' | 'deny';
-		const buttons: { label: string; run: () => Choice }[] = [{ label: localize('codeRsMcpAllow', "Allow"), run: () => 'once' }];
+		type Choice = 'once' | 'session' | 'deny' | 'unchecked';
+		// High risk: Allow only works with the checkbox ticked, so a stray Enter cannot run it.
+		const buttons: { label: string; run: (c: { checkboxChecked?: boolean }) => Choice }[] = [{
+			label: highRisk ? localize('codeRsMcpRunAnyway', "Run Anyway") : localize('codeRsMcpAllow', "Allow"),
+			run: c => !highRisk || c.checkboxChecked ? 'once' : 'unchecked',
+		}];
 		if (level === 2) {
 			buttons.push({ label: localize('codeRsMcpAllowSession', "Allow for This Session"), run: () => 'session' });
 		}
@@ -158,6 +162,7 @@ export class TauriMcpWriteTools extends Disposable {
 			detail: typeof detail === 'string' ? detail : undefined,
 			buttons,
 			cancelButton: { label: localize('codeRsMcpDeny', "Deny"), run: () => 'deny' },
+			checkbox: highRisk ? { label: localize('codeRsMcpUnderstand', "I understand the risk and want to run it"), checked: false } : undefined,
 			custom: {
 				markdownDetails: [
 					{ markdown: new MarkdownString(localize('codeRsMcpRequestedBy', "Requested by MCP client: **{0}** · tool `{1}`", clientName(client), tool)) },
@@ -167,6 +172,9 @@ export class TauriMcpWriteTools extends Disposable {
 		});
 		if (result === 'session') {
 			this.sessionAllowed.add(tool);
+		}
+		if (result === 'unchecked') {
+			throw new Error('The user did not confirm this high risk command (the confirmation checkbox was not ticked).');
 		}
 		if (result !== 'once' && result !== 'session') {
 			throw new Error('The user denied this request.');
@@ -335,7 +343,7 @@ export class TauriMcpWriteTools extends Disposable {
 			}
 			await this.confirm(client, 'terminal_run', 3, assessment.risk === 'high'
 				? localize('codeRsMcpTermHigh', "An AI wants to run a HIGH RISK command")
-				: localize('codeRsMcpTerm', "Run this command?"), md);
+				: localize('codeRsMcpTerm', "Run this command?"), md, assessment.risk === 'high');
 		}
 		const timeoutMs = typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined;
 		const result = await tauriInvoke<IExecResult>('guardian_exec', { command, cwd: ctx.toPath(cwd), timeoutMs });

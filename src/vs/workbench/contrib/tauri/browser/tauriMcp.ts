@@ -34,6 +34,8 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { TauriMcpWriteTools, WRITE_TOOLS } from './tauriMcpWriteTools.js';
+import { ITextFileService } from '../../../services/textfile/common/textfiles.js';
+import { IWorkbenchExtensionManagementService } from '../../../services/extensionManagement/common/extensionManagement.js';
 import { listProviders, reviewCode, reviewExtensionReport } from './tauriAssistant.js';
 import { IExtensionGalleryService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 
@@ -129,11 +131,29 @@ export class TauriMcpContribution extends Disposable implements IWorkbenchContri
 		this.writeTools = this._register(instantiationService.createInstance(TauriMcpWriteTools));
 		this.listen();
 		this.applyEnabled();
+		instantiationService.invokeFunction(accessor => this.forwardEvents(accessor.get(ITextFileService), accessor.get(IWorkbenchExtensionManagementService)));
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(MCP_ENABLED_SETTING)) {
 				this.applyEnabled();
 			}
 		}));
+	}
+
+	/** Workbench events for MCP clients (notifications/message on the SSE stream). */
+	private forwardEvents(textFileService: ITextFileService, extensionManagementService: IWorkbenchExtensionManagementService): void {
+		const emit = (kind: string, data: unknown) => {
+			if (this.configurationService.getValue<boolean>(MCP_ENABLED_SETTING) === true) {
+				tauriInvoke('mcp_emit_event', { kind, data }).catch(() => { /* MCP off */ });
+			}
+		};
+		this._register(textFileService.files.onDidSave(e => emit('file-saved', { path: this.toPath(e.model.resource) })));
+		this._register(extensionManagementService.onDidInstallExtensions(results => {
+			for (const r of results) {
+				emit(r.error ? 'extension-install-failed' : 'extension-installed', { id: r.identifier.id, version: r.local?.manifest.version ?? null });
+			}
+		}));
+		this._register(extensionManagementService.onDidUninstallExtension(e => emit('extension-uninstalled', { id: e.identifier.id })));
+		this._register(this.contextService.onDidChangeWorkspaceFolders(() => emit('workspace-folders-changed', { folders: this.folders().map(f => this.toPath(f.uri)) })));
 	}
 
 	private async applyEnabled(): Promise<void> {
@@ -365,6 +385,52 @@ ${file.content ?? ''}
 		}
 	}
 }
+
+/** "Ask the AI...": sends a message with the current file and selection to connected MCP clients. */
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'codeRs.mcp.askAi',
+			title: localize2('codeRsMcpAskAi', "Ask the AI (MCP)..."),
+			category: localize2('codeRsCategory', "code-rs"),
+			f1: true,
+		});
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const configurationService = accessor.get(IConfigurationService);
+		const quickInputService = accessor.get(IQuickInputService);
+		const editorService = accessor.get(IEditorService);
+		const notificationService = accessor.get(INotificationService);
+		if (!isTauri()) {
+			return;
+		}
+		if (configurationService.getValue<boolean>(MCP_ENABLED_SETTING) !== true) {
+			notificationService.info(localize('codeRsMcpAskOff', "Turn on the MCP server first (Settings > code-rs MCP)."));
+			return;
+		}
+		const editor = editorService.activeTextEditorControl;
+		const model = isCodeEditor(editor) ? editor.getModel() : undefined;
+		const selection = isCodeEditor(editor) ? editor.getSelection() : undefined;
+		const text = await quickInputService.input({
+			title: localize('codeRsMcpAskTitle2', "Message for the connected AI"),
+			prompt: localize('codeRsMcpAskPrompt', "Sent with the current file and selection. The AI reads it with the user_messages tool."),
+			ignoreFocusLost: true,
+		});
+		if (!text) {
+			return;
+		}
+		const selected = model && selection && !selection.isEmpty() ? model.getValueInRange(selection).slice(0, 20_000) : undefined;
+		await tauriInvoke('mcp_emit_event', {
+			kind: 'user-message', data: {
+				text, time: Date.now(),
+				file: model ? (model.uri.scheme === 'file' ? model.uri.fsPath : model.uri.toString()) : null,
+				selection: selection && model ? { startLine: selection.startLineNumber, endLine: selection.endLineNumber, text: selected ?? null } : null,
+			}
+		});
+		notificationService.status(localize('codeRsMcpAskSent', "Sent to the AI. Tell it to check user_messages if it does not pick it up."), { hideAfter: 5000 });
+	}
+});
 
 /** The MCP panel: status, connection setup and recent activity (Ctrl+Alt+Shift+M). */
 registerAction2(class extends Action2 {

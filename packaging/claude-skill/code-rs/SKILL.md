@@ -23,6 +23,9 @@ shows how to connect. Clients that use a command run `code-rs --mcp`.
   own terminal. With `terminal_run`, give a `reason`; the user's approval mode decides whether
   they are asked, and high risk commands normally always ask. Never try to split or disguise a
   command to get a lower risk.
+- **Messages from the user:** the user can send you a message from code-rs ("Ask the AI
+  (MCP)..."). Check `user_messages` at the start of a task and when the user says they sent
+  you something.
 - **Ask, don't guess:** use `ui_ask` for decisions only the user can make, `ui_status` for
   progress on long tasks.
 - Files outside the workspace folders are not accessible, and an untrusted workspace is

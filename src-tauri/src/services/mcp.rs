@@ -37,7 +37,13 @@ struct McpServer {
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, mpsc::Sender<Result<Value, String>>>>,
     dir: PathBuf,
+    /// Open SSE streams (GET /mcp): server-to-client notifications.
+    streams: Mutex<Vec<mpsc::Sender<String>>>,
+    /// Messages the user sent to the AI ("Ask the AI..."), until a client reads them.
+    inbox: Mutex<Vec<Value>>,
 }
+
+const MAX_INBOX: usize = 50;
 
 static SERVER: OnceLock<McpServer> = OnceLock::new();
 
@@ -119,6 +125,8 @@ fn tools() -> Value {
         { "name": "ui_ask", "description": "Ask the user a question in code-rs and wait for the answer: yes/no (no options), a choice (options) or free text (text: true).",
           "inputSchema": { "type": "object", "properties": { "question": { "type": "string" },
               "options": { "type": "array", "items": { "type": "string" }, "maxItems": 10 }, "text": { "type": "boolean" } }, "required": ["question"] } },
+        { "name": "user_messages", "description": "Messages the user sent to you from code-rs (command 'Ask the AI...'), with the file and selection they were looking at. Returns and clears the pending messages. Clients that show MCP notifications also get them live.",
+          "inputSchema": { "type": "object", "properties": {} } },
         { "name": "ui_notify", "description": "Show a notification to the user in code-rs.",
           "inputSchema": { "type": "object", "properties": { "message": { "type": "string" },
               "severity": { "type": "string", "enum": ["info", "warning", "error"] } }, "required": ["message"] } },
@@ -160,6 +168,88 @@ pub fn mcp_set_enabled<R: Runtime>(app: AppHandle<R>, enabled: bool) -> Result<O
     }
 }
 
+/// SSE stream for server-to-client notifications (events and user messages). Written by
+/// hand so every event is flushed immediately (tiny_http's chunked writer buffers 8 KB).
+fn open_stream(server: &McpServer, request: tiny_http::Request) {
+    let (tx, rx) = mpsc::channel::<String>();
+    {
+        let mut streams = server.streams.lock().unwrap();
+        if streams.len() >= 16 {
+            return respond(request, 429, None);
+        }
+        streams.push(tx);
+    }
+    let mut writer = request.into_writer();
+    let head = "HTTP/1.1 200 OK
+
+Content-Type: text/event-stream
+
+Cache-Control: no-cache
+
+Connection: keep-alive
+
+Transfer-Encoding: chunked
+
+
+
+";
+    if writer.write_all(head.as_bytes()).is_err() {
+        return;
+    }
+    let mut send = |payload: &str| -> std::io::Result<()> {
+        write!(writer, "{:x}
+
+{payload}
+
+", payload.len())?;
+        writer.flush()
+    };
+    if send(": connected
+
+").is_err() {
+        return;
+    }
+    loop {
+        let payload = match rx.recv_timeout(Duration::from_secs(25)) {
+            Ok(data) => format!("event: message
+data: {data}
+
+"),
+            // Keep-alive; a closed connection fails here and ends the thread.
+            Err(mpsc::RecvTimeoutError::Timeout) => ": keep-alive
+
+".to_string(),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        };
+        if send(&payload).is_err() {
+            return;
+        }
+    }
+}
+
+fn broadcast(server: &McpServer, notification: &Value) {
+    let data = notification.to_string();
+    server.streams.lock().unwrap().retain(|s| s.send(data.clone()).is_ok());
+}
+
+/// Workbench events (file saved, extension installed, ...) sent to connected MCP clients as
+/// `notifications/message`. Logged locally only; nothing leaves the machine.
+#[tauri::command]
+pub fn mcp_emit_event(kind: String, data: Value) {
+    let Some(server) = SERVER.get() else { return };
+    if !server.enabled.load(Ordering::SeqCst) {
+        return;
+    }
+    if kind == "user-message" {
+        let mut inbox = server.inbox.lock().unwrap();
+        inbox.push(data.clone());
+        let excess = inbox.len().saturating_sub(MAX_INBOX);
+        inbox.drain(..excess);
+    }
+    broadcast(server, &json!({ "jsonrpc": "2.0", "method": "notifications/message",
+        "params": { "level": "info", "logger": "code-rs", "data": { "event": kind, "data": data } } }));
+}
+
 /// Result of a tool call executed by the workbench.
 #[tauri::command]
 pub fn mcp_respond(id: u64, result: Option<Value>, error: Option<String>) {
@@ -191,6 +281,8 @@ fn start<R: Runtime>(app: &AppHandle<R>) -> Result<&'static McpServer, String> {
         next_id: AtomicU64::new(1),
         pending: Mutex::new(HashMap::new()),
         dir,
+        streams: Mutex::new(Vec::new()),
+        inbox: Mutex::new(Vec::new()),
     };
     let _ = SERVER.set(server);
     let server = SERVER.get().expect("set above");
@@ -264,8 +356,10 @@ fn handle_http<R: Runtime>(app: &AppHandle<R>, server: &McpServer, mut request: 
     if request.url().split('?').next() != Some("/mcp") {
         return respond(request, 404, None);
     }
+    if request.method() == &tiny_http::Method::Get {
+        return open_stream(server, request);
+    }
     if request.method() != &tiny_http::Method::Post {
-        // No server-initiated SSE stream in phase 1.
         return respond(request, 405, None);
     }
 
@@ -295,11 +389,11 @@ fn handle_rpc<R: Runtime>(app: &AppHandle<R>, server: &McpServer, message: &Valu
     let result = match method {
         "initialize" => json!({
             "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": { "tools": { "listChanged": false }, "prompts": { "listChanged": false } },
+            "capabilities": { "tools": { "listChanged": false }, "prompts": { "listChanged": false }, "logging": {} },
             "serverInfo": { "name": "code-rs", "version": app.package_info().version.to_string() },
             "instructions": "Tools to observe and drive the code-rs editor. Paths are absolute or relative to the first workspace folder; files outside the workspace are not accessible."
         }),
-        "ping" => json!({}),
+        "ping" | "logging/setLevel" => json!({}),
         "tools/list" => json!({ "tools": tools() }),
         "prompts/list" => json!({ "prompts": prompts().iter().map(|(name, description, arg, _)| json!({
             "name": name, "description": description,
@@ -323,7 +417,10 @@ fn handle_rpc<R: Runtime>(app: &AppHandle<R>, server: &McpServer, message: &Valu
             if !known {
                 return Some(rpc_error(id, -32602, &format!("unknown tool: {name}")));
             }
-            let outcome = if name == "command_assess" {
+            let outcome = if name == "user_messages" {
+                let messages: Vec<Value> = std::mem::take(&mut *server.inbox.lock().unwrap());
+                Ok(json!({ "messages": messages }))
+            } else if name == "command_assess" {
                 // Level 0 and pure: answered here, no window needed.
                 let command = args.get("command").and_then(Value::as_str).unwrap_or("");
                 serde_json::to_value(super::guardian::assess(command)).map_err(|e| e.to_string())
@@ -377,13 +474,42 @@ fn audit(server: &McpServer, client: &str, tool: &str, args: &Value, outcome: &R
 
 /// `code-rs --mcp`: stdio <-> HTTP bridge to the running instance, for MCP
 /// clients configured with a command (Claude Code, Kiro, ...).
+fn stream_notifications(ep: &Value) {
+    let url = ep["url"].as_str().unwrap_or_default().to_string();
+    let token = ep["token"].as_str().unwrap_or_default().to_string();
+    loop {
+        if let Ok(response) = ureq::get(&url)
+            .header("Authorization", &format!("Bearer {token}"))
+            .header("Accept", "text/event-stream")
+            .header("User-Agent", "stdio-events")
+            .call()
+        {
+            let reader = std::io::BufReader::new(response.into_body().into_reader());
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                if let Some(data) = line.strip_prefix("data: ") {
+                    let mut out = std::io::stdout().lock();
+                    if writeln!(out, "{data}").and_then(|_| out.flush()).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_secs(5));
+    }
+}
+
 pub fn stdio_bridge() -> i32 {
     let endpoint = mcp_dir_for_identifier()
         .map(|d| d.join("endpoint.json"))
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str::<Value>(&s).ok());
     let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
+    let stdout = std::io::stdout();
+    // Forward server notifications (SSE) to stdout, for clients that only speak stdio.
+    if let Some(ep) = endpoint.clone() {
+        std::thread::spawn(move || stream_notifications(&ep));
+    }
     // Name the real client (from `initialize`) in confirmation dialogs and the audit log.
     let mut client = "stdio".to_string();
     for line in stdin.lock().lines() {
@@ -395,7 +521,7 @@ pub fn stdio_bridge() -> i32 {
         if parsed.is_err() {
             // JSON-RPC: invalid JSON gets a parse error with a null id.
             let reply = rpc_error(Value::Null, -32700, "parse error").to_string();
-            if writeln!(stdout, "{reply}").and_then(|_| stdout.flush()).is_err() {
+            if { let mut out = stdout.lock(); writeln!(out, "{reply}").and_then(|_| out.flush()) }.is_err() {
                 break;
             }
             continue;
@@ -430,7 +556,7 @@ pub fn stdio_bridge() -> i32 {
             }
         };
         if let Some(reply) = reply {
-            if writeln!(stdout, "{reply}").and_then(|_| stdout.flush()).is_err() {
+            if { let mut out = stdout.lock(); writeln!(out, "{reply}").and_then(|_| out.flush()) }.is_err() {
                 break;
             }
         }
