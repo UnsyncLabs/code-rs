@@ -44,7 +44,8 @@ jobs:
             arch: x64
             rust_target: x86_64-unknown-linux-gnu
           - name: macOS Apple Silicon
-            os: macos-14
+            # macos-14 is no longer supported on GitHub-hosted runners.
+            os: macos-15
             platform: darwin
             arch: arm64
             rust_target: aarch64-apple-darwin
@@ -112,6 +113,10 @@ jobs:
           # Signs the updater artifacts; the public key is in src-tauri/tauri.conf.json.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # AppImage: linuxdeploy cannot mount itself (no FUSE on the runners) and its strip
+          # chokes on the bundled Node and prebuilt native modules.
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          NO_STRIP: 'true'
         with:
           projectPath: .
           tauriScript: npx -y @tauri-apps/cli@2
