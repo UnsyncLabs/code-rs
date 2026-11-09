@@ -1,0 +1,121 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* code-rs approvals (Contract B): tool-call approval cards docked above the chat input.
+   Theme colors come exclusively from --vscode-* CSS variables. */
+
+.tauri-approvals-host {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 0 12px 8px;
+}
+
+.tauri-approvals-host:empty {
+	display: none;
+}
+
+.tauri-approval-card {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 10px 12px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: 6px;
+	background-color: var(--vscode-editorWidget-background);
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+}
+
+.tauri-approval-card.high-risk {
+	border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground));
+}
+
+.tauri-approval-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	opacity: 0.85;
+}
+
+.tauri-approval-header .tauri-approval-icon {
+	color: var(--vscode-textLink-foreground, var(--vscode-foreground));
+	flex: none;
+}
+
+.tauri-approval-card.high-risk .tauri-approval-header .tauri-approval-icon {
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.tauri-approval-header-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tauri-approval-title {
+	font-weight: 600;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tauri-approval-detail {
+	font-size: 12px;
+	max-height: 220px;
+	overflow-y: auto;
+}
+
+.tauri-approval-detail p {
+	margin: 0 0 6px;
+}
+
+.tauri-approval-detail p:last-child {
+	margin-bottom: 0;
+}
+
+.tauri-approval-detail code {
+	font-family: var(--monaco-monospace-font);
+	background-color: var(--vscode-textCodeBlock-background);
+	border-radius: 3px;
+	padding: 0 3px;
+}
+
+.tauri-approval-detail pre {
+	background-color: var(--vscode-textCodeBlock-background);
+	border-radius: 4px;
+	padding: 6px 8px;
+	overflow-x: auto;
+}
+
+.tauri-approval-detail pre code {
+	background-color: transparent;
+	padding: 0;
+}
+
+.tauri-approval-checkbox-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.tauri-approval-checkbox-label {
+	cursor: pointer;
+	user-select: none;
+}
+
+.tauri-approval-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.tauri-approval-actions .monaco-button {
+	width: auto;
+	padding: 2px 12px;
+}
