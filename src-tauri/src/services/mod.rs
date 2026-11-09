@@ -4,6 +4,7 @@
 //! Node.js integration. They are currently stubs: the `tauri::command`
 //! signatures are in place and compile, but the bodies are `TODO`s.
 
+pub mod acp;
 pub mod app_protocol;
 pub mod assistant;
 pub mod guardian;

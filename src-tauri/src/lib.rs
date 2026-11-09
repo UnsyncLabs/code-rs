@@ -47,6 +47,8 @@ pub fn run() {
         .manage(services::pty::PtyState::default())
         // Node extension host bridge state (services/extension_host.rs).
         .manage(services::extension_host::ExtensionHostState::default())
+        // ACP client sessions (services/acp.rs).
+        .manage(services::acp::AcpState::default())
         .setup(|app| {
             use tauri::Manager as _;
             // Where out/, extensions/ and node_modules/ live (repo in dev, bundle in release).
@@ -151,12 +153,21 @@ pub fn run() {
             // --- command guardian ---
             services::guardian::guardian_assess,
             services::guardian::guardian_exec,
+            // --- ACP client (services/acp.rs) ---
+            services::acp::acp_agents,
+            services::acp::acp_start,
+            services::acp::acp_prompt,
+            services::acp::acp_cancel,
+            services::acp::acp_stop,
+            services::acp::acp_permission_result,
+            services::acp::acp_fs_result,
         ])
         .build(tauri::generate_context!())
         .expect("error while building code-rs tauri application")
         .run(|_app, event| {
             if let tauri::RunEvent::Exit = event {
                 services::mcp::on_exit();
+                services::acp::on_exit(_app);
             }
         });
 }
