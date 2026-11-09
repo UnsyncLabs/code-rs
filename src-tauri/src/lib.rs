@@ -145,6 +145,9 @@ pub fn run() {
             services::assistant::assistant_provider_save,
             services::assistant::assistant_provider_delete,
             services::assistant::assistant_complete,
+            // --- command guardian ---
+            services::guardian::guardian_assess,
+            services::guardian::guardian_exec,
         ])
         .build(tauri::generate_context!())
         .expect("error while building code-rs tauri application")

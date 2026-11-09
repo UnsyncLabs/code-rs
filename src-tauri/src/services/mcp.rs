@@ -26,7 +26,8 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
-const TOOL_TIMEOUT: Duration = Duration::from_secs(60);
+/// Long enough for the user to read a confirmation dialog or for a command / AI review to finish.
+const TOOL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const MAX_BODY_BYTES: u64 = 4 * 1024 * 1024;
 
 struct McpServer {
@@ -41,6 +42,19 @@ struct McpServer {
 static SERVER: OnceLock<McpServer> = OnceLock::new();
 
 /// Tool catalog (phase 1). Levels: 0 = read, 1 = UI (see design §4).
+/// Reusable flows for any MCP client: (name, description, argument, template).
+fn prompts() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
+    vec![
+        ("review-extension", "Review an extension (or update) for security before installing it", "id",
+         "Use the code-rs MCP tools to decide whether the extension {} is safe to install. Call extensions_audit (and assistant_review_extension if a reviewer is configured), explain the risk in plain words, then record your verdict with extensions_review_submit. Do not install it unless I ask."),
+        ("fix-diagnostics", "Fix the errors code-rs reports in a file, proposing the changes for approval", "path",
+         "Call diagnostics_get for {}, read the file with file_read, and fix the errors. Apply fixes only with edit_propose (I will see the diff), one coherent change at a time."),
+        ("safe-command", "Check a shell command with the code-rs guardian before running it", "command",
+         "Call command_assess for this command: {}
+Explain what it would change or delete and whether it can be undone. If the risk is medium or high, suggest a safer alternative before running anything."),
+    ]
+}
+
 fn tools() -> Value {
     let path = json!({ "type": "string", "description": "Absolute path, or relative to the first workspace folder" });
     json!([
@@ -79,6 +93,32 @@ fn tools() -> Value {
           "inputSchema": { "type": "object", "properties": { "paths": { "type": "array", "items": path, "maxItems": 20 },
               "focus": { "type": "string", "description": "Optional: what to focus on" } }, "required": ["paths"] },
           "annotations": { "readOnlyHint": true } },
+        { "name": "edit_propose", "description": "Propose changes to workspace files. code-rs shows the diff and the user accepts or rejects; accepted edits can be undone. Each edit either replaces the whole file (content) or replaces one exact occurrence of oldText with newText. New files are allowed with content.",
+          "inputSchema": { "type": "object", "properties": {
+              "edits": { "type": "array", "minItems": 1, "maxItems": 50, "items": { "type": "object", "properties": {
+                  "path": path, "content": { "type": "string" }, "oldText": { "type": "string" }, "newText": { "type": "string" } }, "required": ["path"] } },
+              "summary": { "type": "string", "description": "One line shown to the user: what and why" } }, "required": ["edits"] } },
+        { "name": "extensions_install", "description": "Install or update an extension from Open VSX. The user confirms and sees the security report (plus reviews submitted with extensions_review_submit).",
+          "inputSchema": { "type": "object", "properties": { "id": { "type": "string" }, "version": { "type": "string" } }, "required": ["id"] } },
+        { "name": "extensions_uninstall", "description": "Uninstall a user-installed extension. The user confirms.",
+          "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }, "annotations": { "destructiveHint": true } },
+        { "name": "extensions_list", "description": "Installed extensions (id, version, built-in or user, enabled).",
+          "inputSchema": { "type": "object", "properties": {} }, "annotations": { "readOnlyHint": true } },
+        { "name": "extensions_review_submit", "description": "Attach your security review of an extension (e.g. after extensions_audit). It is shown to the user in the install dialog of that extension during this session.",
+          "inputSchema": { "type": "object", "properties": { "id": { "type": "string" }, "version": { "type": "string" },
+              "verdict": { "type": "string", "enum": ["looks-fine", "caution", "do-not-install"] }, "notes": { "type": "string" } }, "required": ["id", "verdict", "notes"] } },
+        { "name": "command_run", "description": "Run an editor command. Allowed without extra risk: format document, organize imports, fix all, save, save all, markdown preview. Any other command id needs the user's confirmation. Optionally opens a file first.",
+          "inputSchema": { "type": "object", "properties": { "command": { "type": "string" }, "path": path,
+              "args": { "type": "array", "description": "Arguments for the command (JSON values)" } }, "required": ["command"] } },
+        { "name": "command_assess", "description": "Ask the code-rs command guardian how risky a shell command is BEFORE running it (also for commands you run in your own terminal): risk low/medium/high, categories (recursive-delete, history-rewrite, download-and-execute, exfiltration, ...) and reasons. Signals, not a guarantee.",
+          "inputSchema": { "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] }, "annotations": { "readOnlyHint": true } },
+        { "name": "terminal_run", "description": "Run a shell command (PowerShell on Windows, $SHELL elsewhere) in a workspace folder and return its output. Assessed by the command guardian; the user's approval mode decides whether they are asked (default: always ask). Non-interactive: stdin is closed.",
+          "inputSchema": { "type": "object", "properties": { "command": { "type": "string" }, "cwd": path,
+              "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 600000 },
+              "reason": { "type": "string", "description": "Why you need to run it (shown to the user)" } }, "required": ["command"] } },
+        { "name": "ui_ask", "description": "Ask the user a question in code-rs and wait for the answer: yes/no (no options), a choice (options) or free text (text: true).",
+          "inputSchema": { "type": "object", "properties": { "question": { "type": "string" },
+              "options": { "type": "array", "items": { "type": "string" }, "maxItems": 10 }, "text": { "type": "boolean" } }, "required": ["question"] } },
         { "name": "ui_notify", "description": "Show a notification to the user in code-rs.",
           "inputSchema": { "type": "object", "properties": { "message": { "type": "string" },
               "severity": { "type": "string", "enum": ["info", "warning", "error"] } }, "required": ["message"] } },
@@ -255,12 +295,26 @@ fn handle_rpc<R: Runtime>(app: &AppHandle<R>, server: &McpServer, message: &Valu
     let result = match method {
         "initialize" => json!({
             "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": { "tools": { "listChanged": false } },
+            "capabilities": { "tools": { "listChanged": false }, "prompts": { "listChanged": false } },
             "serverInfo": { "name": "code-rs", "version": app.package_info().version.to_string() },
             "instructions": "Tools to observe and drive the code-rs editor. Paths are absolute or relative to the first workspace folder; files outside the workspace are not accessible."
         }),
         "ping" => json!({}),
         "tools/list" => json!({ "tools": tools() }),
+        "prompts/list" => json!({ "prompts": prompts().iter().map(|(name, description, arg, _)| json!({
+            "name": name, "description": description,
+            "arguments": [{ "name": arg, "required": true }]
+        })).collect::<Vec<_>>() }),
+        "prompts/get" => {
+            let params = message.get("params").cloned().unwrap_or(Value::Null);
+            let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+            let Some((_, description, arg, template)) = prompts().into_iter().find(|p| p.0 == name) else {
+                return Some(rpc_error(id, -32602, &format!("unknown prompt: {name}")));
+            };
+            let value = params.get("arguments").and_then(|a| a.get(arg)).and_then(Value::as_str).unwrap_or("");
+            json!({ "description": description, "messages": [{ "role": "user",
+                "content": { "type": "text", "text": template.replace("{}", value) } }] })
+        }
         "tools/call" => {
             let params = message.get("params").cloned().unwrap_or(Value::Null);
             let name = params.get("name").and_then(Value::as_str).unwrap_or("").to_string();
@@ -269,7 +323,13 @@ fn handle_rpc<R: Runtime>(app: &AppHandle<R>, server: &McpServer, message: &Valu
             if !known {
                 return Some(rpc_error(id, -32602, &format!("unknown tool: {name}")));
             }
-            let outcome = call_tool(app, server, &name, &args);
+            let outcome = if name == "command_assess" {
+                // Level 0 and pure: answered here, no window needed.
+                let command = args.get("command").and_then(Value::as_str).unwrap_or("");
+                serde_json::to_value(super::guardian::assess(command)).map_err(|e| e.to_string())
+            } else {
+                call_tool(app, server, &name, &args, client)
+            };
             audit(server, client, &name, &args, &outcome);
             match outcome {
                 Ok(value) => json!({
@@ -286,11 +346,11 @@ fn handle_rpc<R: Runtime>(app: &AppHandle<R>, server: &McpServer, message: &Valu
 }
 
 /// Forwards a tool call to the workbench and waits for `mcp_respond`.
-fn call_tool<R: Runtime>(app: &AppHandle<R>, server: &McpServer, name: &str, args: &Value) -> Result<Value, String> {
+fn call_tool<R: Runtime>(app: &AppHandle<R>, server: &McpServer, name: &str, args: &Value, client: &str) -> Result<Value, String> {
     let id = server.next_id.fetch_add(1, Ordering::SeqCst);
     let (tx, rx) = mpsc::channel();
     server.pending.lock().unwrap().insert(id, tx);
-    if let Err(e) = app.emit("mcp://request", json!({ "id": id, "tool": name, "args": args })) {
+    if let Err(e) = app.emit("mcp://request", json!({ "id": id, "tool": name, "args": args, "client": client })) {
         server.pending.lock().unwrap().remove(&id);
         return Err(e.to_string());
     }
@@ -324,6 +384,8 @@ pub fn stdio_bridge() -> i32 {
         .and_then(|s| serde_json::from_str::<Value>(&s).ok());
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
+    // Name the real client (from `initialize`) in confirmation dialogs and the audit log.
+    let mut client = "stdio".to_string();
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
@@ -338,7 +400,14 @@ pub fn stdio_bridge() -> i32 {
             }
             continue;
         }
-        let id = parsed.ok().and_then(|m| m.get("id").cloned());
+        let message = parsed.ok();
+        if let Some(name) = message.as_ref().filter(|m| m["method"] == "initialize").and_then(|m| m["params"]["clientInfo"]["name"].as_str()) {
+            let clean: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || "-_. ".contains(*c)).take(40).collect();
+            if !clean.trim().is_empty() {
+                client = format!("{} (stdio)", clean.trim());
+            }
+        }
+        let id = message.and_then(|m| m.get("id").cloned());
         let reply = match &endpoint {
             None => id.map(|id| rpc_error(id, -32000, "code-rs is not running or MCP is disabled (Settings > code-rs MCP)").to_string()),
             Some(ep) => {
@@ -352,7 +421,7 @@ pub fn stdio_bridge() -> i32 {
                     .header("Authorization", &format!("Bearer {token}"))
                     .header("Content-Type", "application/json")
                     .header("Accept", "application/json, text/event-stream")
-                    .header("User-Agent", "code-rs-mcp-stdio")
+                    .header("User-Agent", client.as_str())
                     .send(line.as_str())
                 {
                     Ok(response) => response.into_body().read_to_string().ok().filter(|b| !b.trim().is_empty()),

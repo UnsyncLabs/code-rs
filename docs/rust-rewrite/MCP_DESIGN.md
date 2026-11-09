@@ -296,6 +296,17 @@ pena y para que el usuario confirme lo peligroso.
 | **4** | Herramientas de nivel 2 y 3 con confirmación (`edit_propose`, instalar, desinstalar, `command_run`); revisión por clientes MCP (`extensions_review_submit`) |
 | **5** | Guardián de comandos (sección 7b) y `command_assess`; `terminal_run` (siempre con confirmación y evaluado por el guardián), suscripciones a eventos, comunicación usuario↔IA, skill y prompts |
 
+### Estado (noviembre 2026)
+
+- Fases 1–4: implementadas.
+- Fase 5: implementados `command_assess`, `terminal_run` con los cuatro modos de aprobación y
+  `alwaysConfirmHighRisk`, guardián capa 1 (reglas, con tests) y capa 3 (LLM opcional,
+  `codeRs.mcp.guardian.llmProvider`), `ui_ask`, prompts MCP y la skill
+  (`packaging/claude-skill/code-rs/SKILL.md`).
+- Pendiente de la fase 5: suscripciones a eventos (requiere el stream SSE del servidor),
+  "Pedir a la IA…" (`notifications/message`), y la capa 2 (micro-clasificador o Laya): no se
+  adopta hasta medir recursos y precisión con un conjunto de comandos etiquetados.
+
 ## 11. Decisiones tomadas
 
 1. **El MCP viene apagado por defecto**, como la telemetría. Se activa en Ajustes.

@@ -6,6 +6,7 @@
 
 pub mod app_protocol;
 pub mod assistant;
+pub mod guardian;
 pub mod extension_host;
 pub mod extension_audit;
 pub mod extension_install;

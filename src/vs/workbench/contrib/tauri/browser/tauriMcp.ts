@@ -14,7 +14,7 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { IMarkerService, MarkerSeverity } from '../../../../platform/markers/common/markers.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
@@ -33,6 +33,7 @@ import { isCodeEditor } from '../../../../editor/browser/editorBrowser.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
+import { TauriMcpWriteTools, WRITE_TOOLS } from './tauriMcpWriteTools.js';
 import { listProviders, reviewCode, reviewExtensionReport } from './tauriAssistant.js';
 import { IExtensionGalleryService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 
@@ -41,8 +42,8 @@ import { IExtensionGalleryService } from '../../../../platform/extensionManageme
  *
  * Rust owns the transport, authentication and audit log and forwards tool calls here as
  * `mcp://request` events. This contribution runs them against the workbench services and
- * answers with `mcp_respond`. Phase 1 only has read (level 0) and UI (level 1) tools;
- * files outside the workspace folders are never accessible, and an untrusted workspace is
+ * answers with `mcp_respond`. Read (level 0) and UI (level 1) tools are here; tools that
+ * change things (levels 2-3) are in tauriMcpWriteTools.ts and always confirm. Files outside the workspace folders are never accessible, and an untrusted workspace is
  * read-only.
  */
 
@@ -58,6 +59,7 @@ interface IMcpRequest {
 	readonly id: number;
 	readonly tool: string;
 	readonly args: Record<string, unknown>;
+	readonly client?: string;
 }
 
 interface IMcpStatus {
@@ -99,6 +101,7 @@ export class TauriMcpContribution extends Disposable implements IWorkbenchContri
 
 	static readonly ID = 'workbench.contrib.tauriMcp';
 
+	private readonly writeTools: TauriMcpWriteTools | undefined;
 	private readonly statusEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor & { dispose(): void }>());
 
 	constructor(
@@ -117,11 +120,13 @@ export class TauriMcpContribution extends Disposable implements IWorkbenchContri
 		@IExtensionGalleryService private readonly galleryService: IExtensionGalleryService,
 		@IDialogService private readonly dialogService: IDialogService,
 		@IStorageService private readonly storageService: IStorageService,
+		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
 		if (!isTauri()) {
 			return;
 		}
+		this.writeTools = this._register(instantiationService.createInstance(TauriMcpWriteTools));
 		this.listen();
 		this.applyEnabled();
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
@@ -168,10 +173,16 @@ export class TauriMcpContribution extends Disposable implements IWorkbenchContri
 		// Some tools reload or reshape the window; they answer first and act afterwards.
 		let after: (() => unknown) | undefined;
 		try {
-			if (UI_TOOLS.has(request.tool) && !this.trustService.isWorkspaceTrusted()) {
+			if ((UI_TOOLS.has(request.tool) || WRITE_TOOLS.has(request.tool)) && !this.trustService.isWorkspaceTrusted()) {
 				throw new Error('This workspace is not trusted: MCP clients can only read it.');
 			}
-			const result = await this.run(request.tool, request.args ?? {}, action => { after = action; });
+			const args = request.args ?? {};
+			const written = await this.writeTools?.run(request.tool, args, request.client ?? 'unknown', {
+				resolve: path => this.resolveInWorkspace(path),
+				toPath: uri => this.toPath(uri),
+				folders: () => this.folders().map(f => f.uri),
+			});
+			const result = written !== undefined ? written : await this.run(request.tool, args, action => { after = action; });
 			await tauriInvoke('mcp_respond', { id: request.id, result: result ?? null, error: null });
 		} catch (error) {
 			await tauriInvoke('mcp_respond', { id: request.id, result: null, error: error instanceof Error ? error.message : String(error) });

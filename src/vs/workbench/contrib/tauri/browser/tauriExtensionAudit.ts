@@ -15,7 +15,7 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { isTauri, ITauriExtensionAuditReport, setTauriExtensionReviewHandler, TauriAuditSeverity } from '../../../../platform/tauri/common/tauri.js';
 import { IWorkbenchContribution } from '../../../common/contributions.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
-import { reviewExtensionReport } from './tauriAssistant.js';
+import { getSubmittedReviews, reviewExtensionReport } from './tauriAssistant.js';
 
 /**
  * Extension security review (design: docs/rust-rewrite/MCP_DESIGN.md §6).
@@ -131,6 +131,14 @@ export class TauriExtensionAuditContribution extends Disposable implements IWork
 		const ai = await this.aiOpinion(report);
 		if (ai) {
 			details.push({ markdown: ai });
+		}
+		for (const r of getSubmittedReviews(report.id, report.version)) {
+			const label = r.verdict === 'do-not-install' ? localize('codeRsVerdictNo', "Do not install") : r.verdict === 'caution' ? localize('codeRsVerdictCaution', "Install with caution") : localize('codeRsVerdictFine', "Looks fine");
+			const md = new MarkdownString(`**${localize('codeRsReviewFrom', "Review from {0}", r.client)}: ${label}**
+
+`);
+			md.appendText(r.notes);
+			details.push({ markdown: md });
 		}
 		const { result } = await this.dialogService.prompt<boolean>({
 			type: report.risk === 'high' ? Severity.Error : report.risk === 'medium' ? Severity.Warning : Severity.Info,
