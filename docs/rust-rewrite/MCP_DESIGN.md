@@ -244,8 +244,26 @@ pena y para que el usuario confirme lo peligroso.
 - Herramienta MCP **`command_assess`** (nivel 0): devuelve riesgo, motivo e impacto ("borra
   `.venv` (1,2 GB); se regenera con `pip install -r requirements.txt`"). Pensada para que la
   IA consulte **antes** de ejecutar, también en su propia terminal fuera de code-rs.
-- `terminal_run` usa el guardián automáticamente: riesgo alto = confirmación obligatoria aunque
-  el usuario haya permitido la terminal para la sesión.
+- `terminal_run` usa el guardián automáticamente. Su aprobación se elige con un desplegable
+  (`codeRs.mcp.terminal.approval`):
+
+  | Opción | Comportamiento |
+  |---|---|
+  | `ask` (**por defecto**) | Pregunta antes de cada comando, mostrando el comando exacto y la evaluación del guardián |
+  | `auto-approve-safe` | Ejecuta sin preguntar lo que el guardián considera seguro; pregunta lo de riesgo medio o alto |
+  | `auto-approve-all` | Ejecuta todo sin preguntar (aviso claro al activarlo) |
+  | `off` | La IA no puede usar la terminal |
+
+  Ajuste aparte `codeRs.mcp.terminal.alwaysConfirmHighRisk` (activado por defecto): incluso en
+  `auto-approve-all`, lo que el guardián marca como **alto riesgo** sigue preguntando. El usuario
+  puede desactivarlo bajo su responsabilidad. Toda ejecución queda en el registro de auditoría.
+- **Laya como clasificador entrenado:** como Laya predice entre opciones tipadas en una sola
+  pasada, se ajusta (fine-tuning) con un conjunto de comandos etiquetados por categoría de daño:
+  borrado recursivo, sobrescritura o reescritura de historial (`git reset --hard`,
+  `push --force`), formateo o escritura en discos, ejecución de código descargado, cambios de
+  permisos masivos, destrucción de entornos o bases de datos, exfiltración (enviar archivos o
+  claves a la red), y seguro. Resultado: categoría + probabilidad, usada para decidir si se
+  pregunta. Pendiente: medir recursos y precisión antes de adoptarlo.
 - Entrenamiento de la capa 2: conjunto de comandos etiquetados (reglas, ejemplos reales y
   variantes generadas); modelo pequeño, reentrenable en minutos, versionado con code-rs.
 - Si la capa 2 resultara costosa en algún equipo, se desactiva sin perder la capa 1.
@@ -286,7 +304,7 @@ pena y para que el usuario confirme lo peligroso.
    clientes por MCP para revisar extensiones, updates y código del proyecto (sección 7).
 3. **`command_run` empieza con una lista corta** de comandos permitidos (formatear, organizar
    imports, guardar, abrir vista previa) que se irá ampliando.
-4. **`terminal_run`** (la IA ejecuta comandos en la terminal y lee la salida) queda para la
-   **fase 5**, siempre con confirmación mostrando el comando exacto, lista de comandos
-   bloqueados y un ajuste para desactivarlo por completo. *Pendiente de confirmar.*
+4. **`terminal_run`** (la IA ejecuta comandos en la terminal y lee la salida) va en la
+   **fase 5**. Por defecto pregunta; un desplegable permite auto-aprobar lo seguro, todo, o
+   desactivarlo (sección 7b). Laya se evaluará como clasificador de riesgo entrenado.
 5. **Sin telemetría** en el MCP ni en el asistente. El registro de auditoría es solo local.
