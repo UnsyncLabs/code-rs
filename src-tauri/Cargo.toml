@@ -1,6 +1,6 @@
 [package]
 name = "code-rs"
-version = "0.1.0"
+version = "1.2.3"
 description = "VS Code workbench running on Tauri 2 (Rust shell replacing Electron)"
 authors = ["code-rs contributors"]
 edition = "2021"
