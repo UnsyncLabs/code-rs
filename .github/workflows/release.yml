@@ -52,8 +52,9 @@ jobs:
             # The AppImage is built in its own non-blocking step (see below).
             bundles: --bundles deb,rpm
           - name: macOS Apple Silicon
-            # macos-14 is no longer supported on GitHub-hosted runners.
-            os: macos-15
+            # Cross-compiled on the Intel runner: GitHub's arm64 macOS runners often have no
+            # capacity ("job was not acquired"). Rust/Xcode build aarch64 natively from x64.
+            os: macos-15-intel
             platform: darwin
             arch: arm64
             rust_target: aarch64-apple-darwin
@@ -109,6 +110,13 @@ jobs:
           $PNPM run gulp compile-extensions compile-extension-media
         env:
           NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Rebuild native modules for the target arch (cross build)
+        if: matrix.platform == 'darwin' && matrix.arch == 'arm64'
+        shell: bash
+        # The host is x64: native npm modules were built for x64 by the install. The build
+        # tools have run already, so rebuild everything for arm64 before staging.
+        run: npm_config_arch=arm64 npm_config_target_arch=arm64 $PNPM rebuild
 
       - name: Stage runtime files (workbench, extensions, deps, Node)
         shell: bash

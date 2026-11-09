@@ -230,6 +230,48 @@ fn resolve_command(command: &str) -> Option<PathBuf> {
     None
 }
 
+/// Build the `Command` for a resolved agent program. Windows `.cmd`/`.bat` shims
+/// (npm global installs) cannot be spawned reliably by std: an npm shim is run as
+/// `node <script.js>` directly (no cmd.exe, no console), anything else through an
+/// explicit `cmd.exe /d /c`.
+fn command_for(program: &std::path::Path) -> Command {
+    let ext = program
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    if cfg!(windows) && matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
+        if let Some((node, script)) = npm_shim_target(program) {
+            let mut cmd = Command::new(node);
+            cmd.arg(script);
+            return cmd;
+        }
+        let mut cmd = Command::new("cmd.exe");
+        cmd.arg("/d").arg("/c").arg(program);
+        return cmd;
+    }
+    Command::new(program)
+}
+
+/// For an npm-generated shim, the `node` to use and the script it launches
+/// (`"%dp0%\node_modules\...\index.js"`).
+fn npm_shim_target(shim: &std::path::Path) -> Option<(PathBuf, PathBuf)> {
+    let text = std::fs::read_to_string(shim).ok()?;
+    let dir = shim.parent()?;
+    let start = text.find("\"%dp0%\\")? + "\"%dp0%\\".len();
+    let rel = &text[start..start + text[start..].find('"')?];
+    let script = dir.join(rel);
+    if !script.is_file() {
+        return None;
+    }
+    let local_node = dir.join("node.exe");
+    let node = if local_node.is_file() {
+        local_node
+    } else {
+        resolve_command("node")?
+    };
+    Some((node, script))
+}
+
 // ---------------------------------------------------------------------------
 // Event names (payloads always include `sessionId`)
 // ---------------------------------------------------------------------------
@@ -260,7 +302,7 @@ pub async fn acp_start<R: Runtime>(
     let program = resolve_command(def.command)
         .ok_or_else(|| format!("could not find '{}' on PATH", def.command))?;
 
-    let mut cmd = Command::new(&program);
+    let mut cmd = command_for(&program);
     cmd.args(def.args)
         .current_dir(&cwd)
         .stdin(Stdio::piped())

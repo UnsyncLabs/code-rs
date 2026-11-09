@@ -5,7 +5,7 @@
 # exports CODE_RS_VERSION before running makepkg.
 
 pkgname=code-rs-bin
-pkgver=${CODE_RS_VERSION:-1.2.4}
+pkgver=${CODE_RS_VERSION:-1.2.5}
 pkgrel=1
 pkgdesc="VS Code without Electron: a Tauri (Rust) shell around the VS Code workbench"
 arch=('x86_64')
