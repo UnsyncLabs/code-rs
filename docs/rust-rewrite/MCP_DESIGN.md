@@ -1,6 +1,6 @@
 # Diseño: servidor MCP de code-rs
 
-Estado: **borrador para revisión**. Nada de esto está implementado todavía.
+Estado: **borrador revisado** (decisiones de la sección 10 tomadas). Nada implementado todavía.
 
 ## 1. Objetivo
 
@@ -20,7 +20,12 @@ Casos de uso que guían el diseño:
 5. Encaja con skills de Claude y otros clientes: code-rs publica prompts MCP y una skill
    que explica cómo usar sus herramientas.
 
-**No objetivos (por ahora):** sustituir el chat de VS Code, ejecutar modelos dentro de code-rs,
+6. code-rs trae un **asistente integrado** que puede usar distintos proveedores de IA (Claude,
+   OpenAI, OpenRouter o modelos locales) para revisar extensiones aunque no haya ningún
+   cliente MCP conectado, y que Claude Code o Kiro pueden usar por MCP (sección 7).
+
+**No objetivos (por ahora):** sustituir el chat de VS Code, entrenar o ejecutar modelos dentro
+del propio code-rs (los modelos locales se usan a través de su servidor: Ollama, LM Studio…),
 controlar code-rs desde otra máquina.
 
 ## 2. Arquitectura
@@ -141,8 +146,12 @@ pida la IA o el humano desde la vista de Extensiones.
 
 1. code-rs (Rust) descarga el VSIX a una carpeta de **cuarentena**, sin registrarlo.
 2. Rust analiza el paquete y genera el informe (6.2).
-3. Si hay una IA conectada con el permiso `extensions_review`, se le envía el informe por
-   notificación MCP y puede añadir su valoración (`extensions_review_submit`).
+3. Revisión por IA, si está configurada (sección 7):
+   - el **asistente integrado** analiza el informe y los fragmentos de código señalados, con el
+     proveedor elegido para revisiones (puede ser un modelo local);
+   - si además hay clientes MCP conectados con permiso de revisión (Claude Code, Kiro…), reciben
+     el informe por notificación MCP y pueden añadir su valoración (`extensions_review_submit`);
+   - con varias IAs, el diálogo muestra cada opinión por separado (no se promedian).
 4. El usuario ve un diálogo con el informe, la valoración de la IA si la hay, y decide.
 5. Solo entonces se mueve de cuarentena a la carpeta de extensiones.
 
@@ -176,7 +185,50 @@ Resultado: lista de hallazgos con gravedad y un **nivel global** (bajo, medio, a
 - **Límite honesto:** el análisis estático detecta señales, no demuestra que algo sea seguro.
   El informe lo dice tal cual.
 
-## 7. Comunicación con la IA de cada ventana
+## 7. Asistente integrado y proveedores de IA
+
+code-rs puede tener su propio asistente, independiente de los clientes MCP. Sirve para revisar
+extensiones antes de instalar o actualizar, y para revisar código cuando el usuario (o una
+herramienta por MCP) se lo pide.
+
+### 7.1 Proveedores
+
+| Tipo | Ejemplos | Notas |
+|---|---|---|
+| Anthropic | Claude | API de Anthropic |
+| OpenAI | ChatGPT / GPT | API de OpenAI |
+| OpenRouter | cualquier modelo de su catálogo | una clave para muchos modelos |
+| Compatible con OpenAI (local o propio) | Ollama, LM Studio, llama.cpp server, vLLM | URL base configurable; con un modelo local **nada sale del equipo** |
+
+- Se pueden configurar **varios proveedores** a la vez y asignar uno a cada tarea
+  (`codeRs.assistant.reviewer.extensions`, `codeRs.assistant.reviewer.code`), o pedir una
+  **segunda opinión** a varios.
+- Las llamadas a los proveedores las hace **Rust**, no la página: la clave nunca llega al
+  workbench ni a las extensiones.
+
+### 7.2 Claves y privacidad
+
+- Las claves de API se guardan en el **llavero del sistema** (Windows Credential Manager,
+  macOS Keychain, Secret Service en Linux) mediante el crate `keyring`. Nunca en
+  `settings.json`, en el repositorio ni en logs.
+- **Consentimiento explícito** antes de enviar código del proyecto a un proveedor en la nube,
+  por proyecto. Con proveedores locales no hace falta.
+- Se envía lo mínimo: para una extensión, el informe y los fragmentos señalados, no el paquete
+  entero salvo que el usuario lo pida.
+- Límite de gasto opcional por proveedor (tokens por día).
+
+### 7.3 Lo que el asistente expone por MCP
+
+Para que Claude Code, Kiro u otros lo usen como "segunda opinión" o como revisor:
+
+- `assistant_review_extension` (0): revisa una extensión o un update (usa el informe de 6.2).
+- `assistant_review_code` (0): revisa archivos o un diff del proyecto y devuelve hallazgos.
+- `assistant_providers` (0): qué proveedores hay configurados (sin claves).
+
+Las revisiones son de solo lectura; aplicar arreglos sigue pasando por `edit_propose`
+(nivel 2, con confirmación).
+
+## 8. Comunicación con la IA de cada ventana
 
 - **Del usuario a la IA:** comando "Pedir a la IA…" en la ventana, que envía un mensaje al
   cliente conectado como notificación MCP (`notifications/message`) con el contexto de la
@@ -186,7 +238,7 @@ Resultado: lista de hallazgos con gravedad y un **nivel global** (bajo, medio, a
 - **Ventana de destino:** cada herramienta acepta `windowId`. Si se omite, se usa la ventana
   activa.
 
-## 8. Skills
+## 9. Skills
 
 - Una skill de Claude Code en `packaging/claude-skill/code-rs/SKILL.md`: cómo conectarse,
   qué herramientas hay y buenas prácticas (revisar extensiones antes de instalar, proponer
@@ -194,24 +246,25 @@ Resultado: lista de hallazgos con gravedad y un **nivel global** (bajo, medio, a
 - Los mismos flujos se exponen como **prompts MCP** (sección 5), para que funcionen con
   cualquier cliente, no solo con Claude.
 
-## 9. Fases
+## 10. Fases
 
 | Fase | Contenido |
 |---|---|
 | **1** | Servidor HTTP y stdio, token, descubrimiento, registro de auditoría, herramientas de nivel 0 y 1 (ventanas, carpetas, lectura, editor, diagnósticos, avisos) |
 | **2** | Cuarentena e informe de seguridad (`extensions_audit`), aplicado también a instalaciones manuales; diálogo de confirmación con informe |
-| **3** | Herramientas de nivel 2 y 3 con confirmación (`edit_propose`, instalar, desinstalar, `command_run`); revisión por IA (`extensions_review_submit`) |
-| **4** | Terminal, suscripciones a eventos, comunicación usuario↔IA, skill y prompts |
+| **3** | Asistente integrado: proveedores (Anthropic, OpenAI, OpenRouter, compatibles con OpenAI y locales), claves en el llavero del sistema, revisión de extensiones y updates, herramientas `assistant_*` por MCP |
+| **4** | Herramientas de nivel 2 y 3 con confirmación (`edit_propose`, instalar, desinstalar, `command_run`); revisión por clientes MCP (`extensions_review_submit`) |
+| **5** | `terminal_run` (siempre con confirmación y lista de comandos bloqueados), suscripciones a eventos, comunicación usuario↔IA, skill y prompts |
 
-## 10. Preguntas abiertas
+## 11. Decisiones tomadas
 
-1. **¿Apagado por defecto?** La propuesta es que sí, por coherencia con la telemetría. Lo
-   activaría el usuario en Ajustes o al conectar el primer cliente.
-2. **Revisión de extensiones sin IA conectada:** ¿basta el análisis estático de Rust o
-   quieres que se pueda usar una IA configurada de forma permanente (clave de API) para
-   revisarlas siempre?
-3. **Lista permitida de `command_run`:** ¿empezamos con una lista corta (formatear, organizar
-   imports, guardar, abrir vista previa) y la ampliamos?
-4. **`terminal_run`:** ¿lo incluimos en la primera versión pública o lo dejamos para después
-   por el riesgo?
-5. **Telemetría del MCP:** propuesta: ninguna. El registro de auditoría es solo local.
+1. **El MCP viene apagado por defecto**, como la telemetría. Se activa en Ajustes.
+2. **Revisión de extensiones con IA:** asistente integrado con uno o varios proveedores
+   (Claude, OpenAI, OpenRouter, locales), utilizable también por Claude Code, Kiro u otros
+   clientes por MCP para revisar extensiones, updates y código del proyecto (sección 7).
+3. **`command_run` empieza con una lista corta** de comandos permitidos (formatear, organizar
+   imports, guardar, abrir vista previa) que se irá ampliando.
+4. **`terminal_run`** (la IA ejecuta comandos en la terminal y lee la salida) queda para la
+   **fase 5**, siempre con confirmación mostrando el comando exacto, lista de comandos
+   bloqueados y un ajuste para desactivarlo por completo. *Pendiente de confirmar.*
+5. **Sin telemetría** en el MCP ni en el asistente. El registro de auditoría es solo local.
