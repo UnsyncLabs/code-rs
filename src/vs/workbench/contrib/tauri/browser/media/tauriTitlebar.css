@@ -4,12 +4,14 @@
  *--------------------------------------------------------------------------------------------*/
 
 /* code-rs (Tauri, Windows): the window has no native frame, so the workbench draws the
+   (`.web` is in the selectors to outrank the web build's window-controls-overlay width,
+   which is 0 here, whatever order the stylesheets load in)
    minimize / maximize / close controls, sized like the desktop (Electron) build. */
-.monaco-workbench.tauri-custom-frame .part.titlebar .titlebar-right .window-controls-container {
+.monaco-workbench.web.tauri-custom-frame .part.titlebar .titlebar-right .window-controls-container {
 	width: 138px;
 	height: 100%;
 }
 
-.monaco-workbench.tauri-custom-frame .part.titlebar .titlebar-left .window-controls-container {
+.monaco-workbench.web.tauri-custom-frame .part.titlebar .titlebar-left .window-controls-container {
 	width: 0;
 }
