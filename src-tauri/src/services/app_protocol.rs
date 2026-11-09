@@ -128,8 +128,12 @@ fn render_workbench(root: &Path) -> Result<String, (StatusCode, String)> {
                 "controlUrl": "",
                 "nlsBaseUrl": "",
             },
-            "webviewContentExternalBaseUrlTemplate":
-                format!("{base}{STATIC_PREFIX}/out/vs/workbench/contrib/webview/browser/pre/"),
+            // Each webview gets its own origin: http://<hash>.localhost:<port>/
+            // (see webview_server.rs).
+            "webviewContentExternalBaseUrlTemplate": match super::webview_server::start(root) {
+                Ok(port) => format!("http://{{{{uuid}}}}.localhost:{port}/"),
+                Err(_) => format!("{base}{STATIC_PREFIX}/out/vs/workbench/contrib/webview/browser/pre/"),
+            },
         },
     });
 

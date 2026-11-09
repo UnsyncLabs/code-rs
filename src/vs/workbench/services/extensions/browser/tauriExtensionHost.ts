@@ -48,7 +48,19 @@ import {
 	SocketCloseEventType,
 	SocketDiagnosticsEventType,
 } from '../../../../base/parts/ipc/common/ipc.net.js';
-import { createMessageOfType, isMessageOfType, MessageType } from '../common/extensionHostProtocol.js';
+import * as platform from '../../../../base/common/platform.js';
+import { URI } from '../../../../base/common/uri.js';
+import { ILabelService } from '../../../../platform/label/common/label.js';
+import { ILogService, ILoggerService } from '../../../../platform/log/common/log.js';
+import { IProductService } from '../../../../platform/product/common/productService.js';
+import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
+import { isLoggingOnly } from '../../../../platform/telemetry/common/telemetryUtils.js';
+import { IUserDataProfilesService } from '../../../../platform/userDataProfile/common/userDataProfile.js';
+import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
+import { IBrowserWorkbenchEnvironmentService } from '../../environment/browser/environmentService.js';
+import { IDefaultLogLevelsService } from '../../log/common/defaultLogLevels.js';
+import { IExtensionDescription } from '../../../../platform/extensions/common/extensions.js';
+import { createMessageOfType, IExtensionHostInitData, isMessageOfType, MessageType, UIKind } from '../common/extensionHostProtocol.js';
 import { ExtensionRunningLocation } from '../common/extensionRunningLocation.js';
 import {
 	ExtensionHostExtensions,
@@ -234,12 +246,21 @@ export class TauriExtensionHost extends Disposable implements IExtensionHost {
 	private _hostId: number | null = null;
 	private _protocol: IMessagePassingProtocol | null = null;
 	private _messageProtocol: Promise<IMessagePassingProtocol> | null = null;
+	private readonly _options: ITauriExtensionHostOptions = {};
 
 	constructor(
 		public readonly runningLocation: ExtensionRunningLocation,
 		public readonly startup: ExtensionHostStartup,
 		private readonly _initDataProvider: ITauriExtensionHostDataProvider,
-		private readonly _options: ITauriExtensionHostOptions = {},
+		@ITelemetryService private readonly _telemetryService: ITelemetryService,
+		@IWorkspaceContextService private readonly _contextService: IWorkspaceContextService,
+		@ILabelService private readonly _labelService: ILabelService,
+		@ILogService private readonly _logService: ILogService,
+		@ILoggerService private readonly _loggerService: ILoggerService,
+		@IBrowserWorkbenchEnvironmentService private readonly _environmentService: IBrowserWorkbenchEnvironmentService,
+		@IUserDataProfilesService private readonly _userDataProfilesService: IUserDataProfilesService,
+		@IProductService private readonly _productService: IProductService,
+		@IDefaultLogLevelsService private readonly _defaultLogLevelsService: IDefaultLogLevelsService,
 	) {
 		super();
 	}
@@ -347,17 +368,80 @@ export class TauriExtensionHost extends Disposable implements IExtensionHost {
 		});
 	}
 
-	private async _createInitData(): Promise<object> {
+	private async _createInitData(): Promise<IExtensionHostInitData> {
 		const initData = await this._initDataProvider.getInitData();
 		this.extensions = initData.extensions;
-		// The concrete IExtensionHostInitData payload is assembled by the
-		// workbench's data provider integration. We forward the extensions
-		// snapshot and let the provider enrich it. See EXTHOST.md "open issues":
-		// init data construction mirrors localProcessExtensionHost._createExtHostInitData
-		// and will be wired fully once the browser environment service exposes
-		// the required fields in the Tauri build.
+		const paths = await getTauri().invoke<{ appRoot: string; logsDir: string }>('exthost_paths');
+		const appRoot = URI.file(paths.appRoot);
+		const workspace = this._contextService.getWorkspace();
+
+		// Mirrors webWorkerExtensionHost._createExtHostInitData, adapted for a Node host:
+		// a real app root, a file-system logs location and file:// extension locations.
+		const snapshot = this.extensions.toSnapshot();
+		const toNodeLocation = (location: URI): URI => {
+			// Built-in extensions are served to the UI as vscode-app URLs
+			// (http://vscode-app.localhost/static/<path> on Windows); Node needs files.
+			const staticPrefix = '/static/';
+			if ((location.scheme === 'http' || location.scheme === 'https' || location.scheme === 'vscode-app') && location.authority.startsWith('vscode-app') && location.path.startsWith(staticPrefix)) {
+				return URI.joinPath(appRoot, location.path.substring(staticPrefix.length));
+			}
+			return location;
+		};
+		const allExtensions: IExtensionDescription[] = snapshot.allExtensions.map(ext => ({ ...ext, extensionLocation: toNodeLocation(ext.extensionLocation) }));
+
 		return {
-			extensions: this.extensions.toSnapshot(),
+			commit: this._productService.commit,
+			version: this._productService.version,
+			quality: this._productService.quality,
+			date: this._productService.date,
+			parentPid: 0,
+			environment: {
+				isExtensionDevelopmentDebug: this._environmentService.debugRenderer,
+				appName: this._productService.nameLong,
+				appHost: this._productService.embedderIdentifier ?? 'desktop',
+				appUriScheme: this._productService.urlProtocol,
+				appLanguage: platform.language,
+				appRoot,
+				isExtensionTelemetryLoggingOnly: isLoggingOnly(this._productService, this._environmentService),
+				isPortable: false,
+				extensionDevelopmentLocationURI: this._environmentService.extensionDevelopmentLocationURI,
+				extensionTestsLocationURI: this._environmentService.extensionTestsLocationURI,
+				globalStorageHome: this._userDataProfilesService.defaultProfile.globalStorageHome,
+				workspaceStorageHome: this._environmentService.workspaceStorageHome,
+				extensionLogLevel: this._defaultLogLevelsService.defaultLogLevels.extensions,
+				isSessionsWindow: this._environmentService.isSessionsWindow
+			},
+			workspace: this._contextService.getWorkbenchState() === WorkbenchState.EMPTY ? undefined : {
+				configuration: workspace.configuration || undefined,
+				id: workspace.id,
+				name: this._labelService.getWorkspaceLabel(workspace),
+				transient: workspace.transient
+			},
+			consoleForward: {
+				includeStack: false,
+				logNative: false
+			},
+			extensions: { ...snapshot, allExtensions },
+			telemetryInfo: {
+				sessionId: this._telemetryService.sessionId,
+				machineId: this._telemetryService.machineId,
+				sqmId: this._telemetryService.sqmId,
+				devDeviceId: this._telemetryService.devDeviceId ?? this._telemetryService.machineId,
+				firstSessionDate: this._telemetryService.firstSessionDate,
+				msftInternal: this._telemetryService.msftInternal
+			},
+			remoteExtensionTips: this._productService.remoteExtensionTips,
+			virtualWorkspaceExtensionTips: this._productService.virtualWorkspaceExtensionTips,
+			logLevel: this._logService.getLevel(),
+			loggers: [...this._loggerService.getRegisteredLoggers()],
+			logsLocation: URI.file(paths.logsDir),
+			autoStart: (this.startup === ExtensionHostStartup.EagerAutoStart || this.startup === ExtensionHostStartup.LazyAutoStart),
+			remote: {
+				authority: this._environmentService.remoteAuthority,
+				connectionData: null,
+				isRemote: false
+			},
+			uiKind: UIKind.Desktop
 		};
 	}
 

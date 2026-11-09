@@ -106,6 +106,7 @@ pub fn run() {
             services::extension_host::start_extension_host,
             services::extension_host::stop_extension_host,
             services::extension_host::exthost_write,
+            services::extension_host::exthost_paths,
         ])
         .run(tauri::generate_context!())
         .expect("error while running code-rs tauri application");

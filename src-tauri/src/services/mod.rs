@@ -10,4 +10,5 @@ pub mod fs;
 pub mod pty;
 pub mod search;
 pub mod watcher;
+pub mod webview_server;
 pub mod window;

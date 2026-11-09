@@ -452,6 +452,7 @@ async fn run_host<R: Runtime>(
         },
         status = child.wait() => {
             log::error!("exthost {id}: process exited before connecting: {status:?}");
+            eprintln!("exthost {id}: process exited before connecting: {status:?}");
             None
         }
     };
@@ -534,6 +535,7 @@ async fn run_host<R: Runtime>(
 
     let _ = app.emit(&exit_event(id), ExitPayload { id, code, signal: signal.clone() });
     log::info!("exthost {id}: exited (code={code:?}, signal={signal:?})");
+    eprintln!("exthost {id}: exited (code={code:?}, signal={signal:?})");
 }
 
 #[cfg(unix)]
@@ -565,12 +567,40 @@ where
                     }
                     if is_err {
                         log::error!("[exthost stderr] {text}");
+                        eprintln!("[exthost stderr] {text}");
                     } else {
                         log::info!("[exthost stdout] {text}");
+                        eprintln!("[exthost stdout] {text}");
                     }
                 }
                 Err(_) => break,
             }
         }
     });
+}
+
+/// Filesystem locations the Node extension host needs (it cannot use the
+/// workbench's `vscode-app://` URLs).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionHostPaths {
+    /// Root containing `out/` and `extensions/`.
+    pub app_root: String,
+    /// Directory for extension host logs.
+    pub logs_dir: String,
+}
+
+#[tauri::command]
+pub fn exthost_paths<R: Runtime>(app: AppHandle<R>) -> Result<ExtensionHostPaths, String> {
+    let app_root = super::app_protocol::app_root();
+    let logs_dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|e| e.to_string())?
+        .join("exthost");
+    std::fs::create_dir_all(&logs_dir).map_err(|e| e.to_string())?;
+    Ok(ExtensionHostPaths {
+        app_root: app_root.to_string_lossy().into_owned(),
+        logs_dir: logs_dir.to_string_lossy().into_owned(),
+    })
 }
