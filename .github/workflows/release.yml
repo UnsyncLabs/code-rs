@@ -43,6 +43,8 @@ jobs:
             platform: linux
             arch: x64
             rust_target: x86_64-unknown-linux-gnu
+            # The AppImage is built in its own non-blocking step (see below).
+            bundles: --bundles deb,rpm
           - name: macOS Apple Silicon
             # macos-14 is no longer supported on GitHub-hosted runners.
             os: macos-15
@@ -120,7 +122,7 @@ jobs:
         with:
           projectPath: .
           tauriScript: npx -y @tauri-apps/cli@2
-          args: --target ${{ matrix.rust_target }}
+          args: --target ${{ matrix.rust_target }} ${{ matrix.bundles }}
           tagName: ${{ env.TAG }}
           releaseName: code-rs ${{ env.TAG }}
           releaseBody: |
@@ -132,6 +134,24 @@ jobs:
           prerelease: true
           # latest.json for the in-app updater (Windows, macOS, AppImage).
           includeUpdaterJson: true
+
+      # AppImage: built separately so a linuxdeploy problem cannot block the release, with
+      # --verbose so its real error is in the log. Uploaded to the same draft when it works.
+      - name: AppImage (optional)
+        if: matrix.platform == 'linux'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          NO_STRIP: 'true'
+        run: |
+          sudo apt-get install -y libfuse2 file || true
+          npx -y @tauri-apps/cli@2 build --target ${{ matrix.rust_target }} --bundles appimage --verbose
+          dir=src-tauri/target/${{ matrix.rust_target }}/release/bundle/appimage
+          gh release upload "$TAG" "$dir"/*.AppImage "$dir"/*.AppImage.sig --clobber -R "$GITHUB_REPOSITORY"
 
   arch:
     name: Arch Linux package
