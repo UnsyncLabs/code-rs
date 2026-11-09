@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { Emitter } from '../../../../base/common/event.js';
 import Severity from '../../../../base/common/severity.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -78,6 +79,20 @@ if (isTauri()) {
 			},
 		}
 	});
+}
+
+const onDidChangeProvidersEmitter = new Emitter<void>();
+/** Fires when a provider is added, edited or removed (the chat model list follows it). */
+export const onDidChangeProviders = onDidChangeProvidersEmitter.event;
+
+async function saveProvider(provider: object, apiKey: string | null | undefined): Promise<void> {
+	await tauriInvoke('assistant_provider_save', { provider, apiKey });
+	onDidChangeProvidersEmitter.fire();
+}
+
+async function deleteProvider(id: string): Promise<void> {
+	await tauriInvoke('assistant_provider_delete', { id });
+	onDidChangeProvidersEmitter.fire();
 }
 
 export function listProviders(): Promise<IAssistantProvider[]> {
@@ -240,7 +255,7 @@ registerAction2(class extends Action2 {
 			return;
 		}
 		const provider = { id: `${kind.k.kind}-${Date.now().toString(36)}`, label, kind: kind.k.kind, model, baseUrl };
-		await tauriInvoke('assistant_provider_save', { provider, apiKey: apiKey || null });
+		await saveProvider(provider, apiKey || null);
 		notifications.info(localize('codeRsProviderAdded', "Provider '{0}' added. Choose what it reviews in Configure AI Providers.", label));
 	}
 
@@ -263,11 +278,11 @@ registerAction2(class extends Action2 {
 				label: localize('codeRsReplaceKey', "Replace API key"), action: async () => {
 					const apiKey = await quickInput.input({ title: localize('codeRsApiKey', "API key"), password: true });
 					if (apiKey !== undefined) {
-						await tauriInvoke('assistant_provider_save', { provider: p, apiKey });
+						await saveProvider(p, apiKey);
 					}
 				}
 			},
-			{ label: '$(trash) ' + localize('codeRsRemove', "Remove provider"), action: () => tauriInvoke('assistant_provider_delete', { id: p.id }) },
+			{ label: '$(trash) ' + localize('codeRsRemove', "Remove provider"), action: () => deleteProvider(p.id) },
 		];
 		const picked = await quickInput.pick(items, { title: `${p.label} · ${p.model}` });
 		await picked?.action();

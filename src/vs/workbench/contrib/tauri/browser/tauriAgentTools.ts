@@ -22,11 +22,12 @@ export interface ToolSpec {
 }
 
 export interface IAgentToolHost {
+	readonly _serviceBrand: undefined;
 	tools(): ToolSpec[];
 	run(name: string, input: Record<string, unknown>, token: CancellationToken): Promise<unknown>;
 }
 
-export const IAgentToolHostService = createDecorator<IAgentToolHost & { readonly _serviceBrand: undefined }>('agentToolHost');
+export const IAgentToolHostService = createDecorator<IAgentToolHost>('agentToolHost');
 
 /** Client name shown in approval cards for calls made by the chat agent. */
 export const AGENT_CLIENT_NAME = 'code-rs agent';

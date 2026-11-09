@@ -19,7 +19,8 @@ import { IEditorService } from '../../../services/editor/common/editorService.js
 import { IChatAgentHistoryEntry, IChatAgentRequest, IChatAgentResult, IChatAgentService } from '../../chat/common/participants/chatAgents.js';
 import { IChatProgress } from '../../chat/common/chatService/chatService.js';
 import { ChatAgentLocation, ChatModeKind } from '../../chat/common/constants.js';
-import { IAgentToolHostService } from './tauriAgentTools.js';
+import { EFFORT_KEY, providerIdFromModel } from './tauriChatModels.js';
+import { IAgentToolHost, IAgentToolHostService } from './tauriAgentTools.js';
 import { CODE_REVIEWER_SETTING, listProviders } from './tauriAssistant.js';
 
 export const CHAT_PROVIDER_SETTING = 'codeRs.assistant.chat.provider';
@@ -80,7 +81,7 @@ export class TauriChatAgentContribution extends Disposable implements IWorkbench
 		@IChatAgentService private readonly chatAgentService: IChatAgentService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IEditorService private readonly editorService: IEditorService,
-		@IAgentToolHostService private readonly toolHost: IAgentToolHostService,
+		@IAgentToolHostService private readonly toolHost: IAgentToolHost,
 	) {
 		super();
 		if (!isTauri()) {
@@ -137,7 +138,9 @@ export class TauriChatAgentContribution extends Disposable implements IWorkbench
 	}
 
 	private async invoke(request: IChatAgentRequest, progress: (parts: IChatProgress[]) => void, history: IChatAgentHistoryEntry[], token: CancellationToken): Promise<IChatAgentResult> {
-		const providerId = await this.resolveProvider();
+		// The model picker lists our providers (tauriChatModels.ts); its choice wins.
+		const providerId = providerIdFromModel(request.userSelectedModelId) ?? await this.resolveProvider();
+		const effort = typeof request.modelConfiguration?.[EFFORT_KEY] === 'string' ? request.modelConfiguration[EFFORT_KEY] as string : undefined;
 		if (!providerId) {
 			const md = new MarkdownString(
 				localize('codeRsChatNoProvider', "No AI provider is configured. Run [code-rs: Configure AI Providers]({0}).", `command:${CONFIGURE_COMMAND}`),
@@ -167,6 +170,7 @@ export class TauriChatAgentContribution extends Disposable implements IWorkbench
 					messages,
 					tools: this.toolHost.tools(),
 					maxTokens: 8000,
+					effort,
 					dailyTokenLimit: this.configurationService.getValue<number>(DAILY_LIMIT_SETTING) ?? 0,
 				});
 				if (token.isCancellationRequested) {

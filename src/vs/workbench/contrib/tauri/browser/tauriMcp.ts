@@ -394,6 +394,24 @@ ${file.content ?? ''}
 	}
 }
 
+/** Title bar button (right of the command center): opens the agent chat. Ctrl+Alt+I also does. */
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'codeRs.agentChat.open',
+			title: localize2('codeRsOpenAgentChat', "Open Agent Chat (Ctrl+Alt+I)"),
+			category: localize2('codeRsCategory', "code-rs"),
+			icon: Codicon.commentDiscussionSparkle,
+			f1: true,
+			menu: { id: MenuId.CommandCenter, order: 10003 },
+		});
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		await accessor.get(ICommandService).executeCommand('workbench.action.chat.toggle');
+	}
+});
+
 /** "Ask the AI...": sends a message with the current file and selection to connected MCP clients. */
 registerAction2(class extends Action2 {
 	constructor() {
@@ -448,9 +466,6 @@ registerAction2(class extends Action2 {
 			title: localize2('codeRsMcpShowPanel', "Show MCP Panel (Connections, Approvals and Activity)"),
 			category: localize2('codeRsCategory', "code-rs"),
 			f1: true,
-			// Button to the right of the command center (title bar search box).
-			icon: Codicon.plug,
-			menu: { id: MenuId.CommandCenter, order: 10003 },
 			// Not used by any built-in VS Code keybinding.
 			keybinding: { weight: KeybindingWeight.WorkbenchContrib, primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyMod.Shift | KeyCode.KeyM },
 		});
