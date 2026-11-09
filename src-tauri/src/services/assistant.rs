@@ -531,8 +531,27 @@ fn parse_openai_response(v: &Value) -> (Vec<Block>, String, u64, u64) {
 
 // --- Blocking provider calls ------------------------------------------------
 
-fn chat_anthropic(p: &Provider, key: &str, system: &str, messages: &[ChatMessage], tools: &[ToolSpec], max_tokens: u32) -> Result<(Vec<Block>, String, u64, u64), String> {
-    let body = anthropic_request_body(&p.model, max_tokens, system, messages, tools);
+/// Applies the effort chosen in the chat's effort dropdown, in each provider's own field.
+/// Unknown values are ignored, and OpenAI-compatible (local) servers get nothing.
+fn apply_effort(body: &mut Value, kind: &ProviderKind, effort: Option<&str>) {
+    let Some(effort) = effort else { return };
+    match kind {
+        ProviderKind::Anthropic if matches!(effort, "low" | "medium" | "high" | "xhigh" | "max") => {
+            body["output_config"]["effort"] = json!(effort);
+        }
+        ProviderKind::Openai if matches!(effort, "low" | "medium" | "high") => {
+            body["reasoning_effort"] = json!(effort);
+        }
+        ProviderKind::Openrouter if matches!(effort, "low" | "medium" | "high") => {
+            body["reasoning"] = json!({ "effort": effort });
+        }
+        _ => {}
+    }
+}
+
+fn chat_anthropic(p: &Provider, key: &str, system: &str, messages: &[ChatMessage], tools: &[ToolSpec], max_tokens: u32, effort: Option<&str>) -> Result<(Vec<Block>, String, u64, u64), String> {
+    let mut body = anthropic_request_body(&p.model, max_tokens, system, messages, tools);
+    apply_effort(&mut body, &p.kind, effort);
     let headers = [
         ("x-api-key", key.to_string()),
         ("anthropic-version", ANTHROPIC_VERSION.to_string()),
@@ -542,8 +561,9 @@ fn chat_anthropic(p: &Provider, key: &str, system: &str, messages: &[ChatMessage
     Ok(parse_anthropic_response(&v))
 }
 
-fn chat_openai_like(p: &Provider, key: Option<&str>, system: &str, messages: &[ChatMessage], tools: &[ToolSpec], max_tokens: u32) -> Result<(Vec<Block>, String, u64, u64), String> {
-    let body = openai_request_body(&p.model, p.kind == ProviderKind::Openai, max_tokens, system, messages, tools);
+fn chat_openai_like(p: &Provider, key: Option<&str>, system: &str, messages: &[ChatMessage], tools: &[ToolSpec], max_tokens: u32, effort: Option<&str>) -> Result<(Vec<Block>, String, u64, u64), String> {
+    let mut body = openai_request_body(&p.model, p.kind == ProviderKind::Openai, max_tokens, system, messages, tools);
+    apply_effort(&mut body, &p.kind, effort);
     let mut headers = Vec::new();
     if let Some(key) = key {
         headers.push(("authorization", format!("Bearer {key}")));
@@ -565,6 +585,7 @@ pub async fn assistant_chat<R: Runtime>(
     messages: Vec<ChatMessage>,
     tools: Vec<ToolSpec>,
     max_tokens: Option<u32>,
+    effort: Option<String>,
     daily_token_limit: Option<u64>,
 ) -> Result<ChatTurn, String> {
     let provider = load(&app).into_iter().find(|p| p.id == provider_id).ok_or(format!("unknown provider '{provider_id}'"))?;
@@ -580,8 +601,8 @@ pub async fn assistant_chat<R: Runtime>(
 
     let p = provider.clone();
     let (content, stop_reason, input_tokens, output_tokens) = tauri::async_runtime::spawn_blocking(move || match p.kind {
-        ProviderKind::Anthropic => chat_anthropic(&p, key.as_deref().unwrap_or_default(), &system, &messages, &tools, max_tokens),
-        _ => chat_openai_like(&p, key.as_deref(), &system, &messages, &tools, max_tokens),
+        ProviderKind::Anthropic => chat_anthropic(&p, key.as_deref().unwrap_or_default(), &system, &messages, &tools, max_tokens, effort.as_deref()),
+        _ => chat_openai_like(&p, key.as_deref(), &system, &messages, &tools, max_tokens, effort.as_deref()),
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -594,6 +615,30 @@ pub async fn assistant_chat<R: Runtime>(
         input_tokens,
         output_tokens,
     })
+}
+
+#[cfg(test)]
+mod effort_tests {
+    use super::*;
+
+    #[test]
+    fn effort_goes_to_each_providers_field() {
+        let mut a = json!({ "output_config": { "effort": "medium" } });
+        apply_effort(&mut a, &ProviderKind::Anthropic, Some("max"));
+        assert_eq!(a["output_config"]["effort"], "max");
+        let mut o = json!({});
+        apply_effort(&mut o, &ProviderKind::Openai, Some("high"));
+        assert_eq!(o["reasoning_effort"], "high");
+        let mut r = json!({});
+        apply_effort(&mut r, &ProviderKind::Openrouter, Some("low"));
+        assert_eq!(r["reasoning"]["effort"], "low");
+        let mut l = json!({});
+        apply_effort(&mut l, &ProviderKind::OpenaiCompatible, Some("high"));
+        assert_eq!(l, json!({}));
+        let mut bad = json!({});
+        apply_effort(&mut bad, &ProviderKind::Openai, Some("max"));
+        assert_eq!(bad, json!({}));
+    }
 }
 
 #[cfg(test)]
