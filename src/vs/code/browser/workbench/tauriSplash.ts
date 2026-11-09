@@ -40,6 +40,19 @@ const preloadGlobals: { webFrame?: { setZoomLevel?(level: number): void } } | un
 		partsSplash = undefined;
 	}
 
+	// Safety net: `code-rs.themeBackground` is written the moment the theme changes
+	// (see tauriThemeBackground.ts), while the splash data is saved later. If they
+	// disagree, the splash belongs to an earlier theme: don't paint its colors.
+	try {
+		const currentBackground = localStorage.getItem('code-rs.themeBackground');
+		const splashBackground = partsSplash?.colorInfo.editorBackground;
+		if (currentBackground && splashBackground && currentBackground.toLowerCase() !== splashBackground.toLowerCase()) {
+			partsSplash = undefined;
+		}
+	} catch {
+		// storage unavailable: keep the splash as is
+	}
+
 	const query = new URL(document.location.href).searchParams;
 	const hasWorkspace = query.has('folder') || query.has('workspace') || query.has('tauriFolder');
 

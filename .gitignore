@@ -60,3 +60,4 @@ dist
 # Local agent validation evidence
 .agent-validation/
 dist-app/
+out-bundle/

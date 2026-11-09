@@ -162,6 +162,7 @@ function getEntryPointsForTarget(target: BuildTarget): string[] {
 				...serverEntryPoints,
 				...workerEntryPoints,
 				'vs/code/browser/workbench/workbench', // Includes workbench.web.main.internal.
+				'vs/code/browser/workbench/tauriSplash', // code-rs: layout skeleton painted before the workbench loads.
 				...keyboardMapEntryPoints,
 			];
 		case 'web':

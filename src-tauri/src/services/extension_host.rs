@@ -335,6 +335,21 @@ pub async fn start_extension_host<R: Runtime>(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    // Bundled builds (`build/next bundle --nls`) replace UI strings with indices;
+    // the Node side loads them from nls.messages.json, like Electron's
+    // utility process does via VSCODE_NLS_CONFIG.
+    if let Some(messages) = bootstrap.parent().map(|out| out.join("nls.messages.json")).filter(|p| p.is_file()) {
+        let nls = serde_json::json!({
+            "userLocale": "en",
+            "osLocale": "en",
+            "resolvedLanguage": "en",
+            "defaultMessagesFile": messages.to_string_lossy(),
+            "locale": "en",
+            "availableLanguages": {},
+        });
+        cmd.env("VSCODE_NLS_CONFIG", nls.to_string());
+    }
+
     // Caller-provided env overrides win.
     for (k, v) in &options.env {
         cmd.env(k, v);

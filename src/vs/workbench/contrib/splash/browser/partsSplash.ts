@@ -57,6 +57,14 @@ export class PartsSplash {
 			savePartsSplashSoon();
 		});
 
+		// Save right before the window unloads or reloads (e.g. opening or closing a folder),
+		// so the next splash never shows colors from an earlier theme while the idle save above
+		// is still pending.
+		lifecycleService.onWillShutdown(() => {
+			lastIdleSchedule.clear();
+			this._savePartsSplash();
+		}, undefined, this._disposables);
+
 		_configService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(TitleBarSetting.TITLE_BAR_STYLE)) {
 				this._didChangeTitleBarStyle = true;

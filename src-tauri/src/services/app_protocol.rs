@@ -11,6 +11,7 @@
 //! `http://vscode-app.localhost/`; elsewhere it is `vscode-app://localhost/`.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 
 use tauri::http::{header, Request, Response, StatusCode};
 
@@ -33,7 +34,7 @@ fn base_url() -> String {
     start_url().trim_end_matches('/').to_string()
 }
 
-static APP_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+static APP_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 /// Resolves the app root once at startup:
 /// 1. `VSCODE_APP_ROOT` (explicit override),
@@ -134,7 +135,12 @@ fn mime_for(p: &Path) -> &'static str {
 }
 
 fn render_workbench(root: &Path) -> Result<String, (StatusCode, String)> {
-    let tpl_path = root.join("out/vs/code/browser/workbench/workbench-dev.html");
+    // `out/` is either the transpiled dev build (thousands of modules + CSS
+    // modules, workbench-dev.html) or the bundled/minified build used for
+    // releases (`build/next bundle --target server-web`, workbench.html).
+    let dev_template = root.join("out/vs/code/browser/workbench/workbench-dev.html");
+    let dev = dev_template.is_file();
+    let tpl_path = if dev { dev_template } else { root.join("out/vs/code/browser/workbench/workbench.html") };
     let tpl = std::fs::read_to_string(&tpl_path)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{}: {e}", tpl_path.display())))?;
 
@@ -160,17 +166,38 @@ fn render_workbench(root: &Path) -> Result<String, (StatusCode, String)> {
         },
     });
 
-    let values: [(&str, String); 6] = [
+    // Built-in extension list and dev CSS module list are computed once per
+    // process (they only change when the app is rebuilt).
+    static BUILTIN_EXTENSIONS: OnceLock<String> = OnceLock::new();
+    static CSS_MODULES: OnceLock<String> = OnceLock::new();
+    let builtin = BUILTIN_EXTENSIONS.get_or_init(|| html_attr(&builtin_extensions(root).to_string()));
+    let nls_url = format!("{STATIC_PREFIX}/out/nls.messages.js");
+
+    let mut values: Vec<(&str, String)> = vec![
         ("WORKBENCH_WEB_CONFIGURATION", html_attr(&config.to_string())),
         ("WORKBENCH_WEB_BASE_URL", STATIC_PREFIX.to_string()),
         ("WORKBENCH_AUTH_SESSION", String::new()),
         ("WORKBENCH_SCRIPT_NONCE", String::new()),
-        ("WORKBENCH_BUILTIN_EXTENSIONS", html_attr(&builtin_extensions(root).to_string())),
-        ("WORKBENCH_DEV_CSS_MODULES", html_attr(&serde_json::to_string(&css_modules(root)).unwrap())),
+        ("WORKBENCH_BUILTIN_EXTENSIONS", builtin.clone()),
+        ("WORKBENCH_NLS_FALLBACK_URL", nls_url.clone()),
+        ("WORKBENCH_NLS_URL", nls_url),
     ];
+    if dev {
+        let css = CSS_MODULES.get_or_init(|| html_attr(&serde_json::to_string(&css_modules(root)).unwrap()));
+        values.push(("WORKBENCH_DEV_CSS_MODULES", css.clone()));
+    }
     let mut out = tpl;
     for (k, v) in values {
         out = out.replace(&format!("{{{{{k}}}}}"), &v);
+    }
+    if !dev {
+        // The production template has no built-in extensions element; the
+        // workbench reads it when the product has no commit (as here).
+        out = out.replacen(
+            "</head>",
+            &format!("\t<meta id=\"vscode-workbench-builtin-extensions\" data-settings=\"{builtin}\">\n\t</head>"),
+            1,
+        );
     }
     // Paint the desktop-style layout skeleton before the (large) workbench
     // module graph loads, so window reloads keep the layout on screen.
