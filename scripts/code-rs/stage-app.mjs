@@ -3,13 +3,13 @@
  *  code-rs: assemble the runtime files bundled into the Tauri installers.
  *
  *  dist-app/
- *    app/   out/ (no tests), extensions/ (built-in, no sources), production
+ *    app/   out/ (bundled workbench), extensions/ (built-in, no sources), production
  *           node_modules/, product.json, package.json   -> <resources>/app
  *    node/  node[.exe] (Node runtime for the extension host)  -> <resources>/node
  *
  *  Usage: node scripts/code-rs/stage-app.mjs [--platform win32|linux|darwin] [--arch x64|arm64]
  *         [--node-version 24.22.1] [--out dist-app]
- *  Requires `transpile-client` and the built-in extensions to be compiled first.
+ *  Requires the bundled workbench (out-bundle/) and the built-in extensions to be compiled first.
  *--------------------------------------------------------------------------------------------*/
 
 import { createHash } from 'node:crypto';
@@ -33,14 +33,17 @@ fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(appDir, { recursive: true });
 fs.mkdirSync(nodeDir, { recursive: true });
 
-// --- out/ (compiled workbench, without tests) --------------------------------
-const outSrc = path.join(root, 'out');
-if (!fs.existsSync(path.join(outSrc, 'vs', 'code', 'browser', 'workbench', 'workbench-dev.html'))) {
-	throw new Error('out/ is missing; run `node build/next/index.ts transpile` first');
+// --- out/ (bundled + minified workbench) -------------------------------------
+// Releases ship the bundled build (build/next bundle --minify --nls --target
+// server-web): a handful of files instead of thousands of modules, which makes
+// startup several times faster. Source maps are left out.
+const outSrc = path.join(root, 'out-bundle');
+if (!fs.existsSync(path.join(outSrc, 'vs', 'code', 'browser', 'workbench', 'workbench.html'))) {
+	throw new Error('out-bundle/ is missing; run `node build/next/index.ts bundle --minify --nls --target server-web --out out-bundle` first');
 }
 fs.cpSync(outSrc, path.join(appDir, 'out'), {
 	recursive: true,
-	filter: src => !/[\\/]test[\\/]?$/.test(src) && !src.endsWith('.map'),
+	filter: src => !src.endsWith('.map'),
 });
 log('copied out/');
 

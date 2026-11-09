@@ -86,8 +86,7 @@ jobs:
       - name: Build workbench and built-in extensions
         shell: bash
         run: |
-          node build/next/index.ts transpile
-          cp node_modules/@vscode/codicons/dist/codicon.ttf out/vs/base/browser/ui/codicons/codicon/codicon.ttf
+          node build/next/index.ts bundle --minify --nls --target server-web --out out-bundle
           $PNPM run gulp compile-extensions compile-extension-media
         env:
           NODE_OPTIONS: --max-old-space-size=8192

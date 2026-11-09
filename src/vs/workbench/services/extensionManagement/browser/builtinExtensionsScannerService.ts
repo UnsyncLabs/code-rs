@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { isTauri } from '../../../../platform/tauri/common/tauri.js';
 import { IBuiltinExtensionsScannerService, ExtensionType, IExtensionManifest, TargetPlatform, IExtension } from '../../../../platform/extensions/common/extensions.js';
 import { isWeb, Language } from '../../../../base/common/platform.js';
 import { IWorkbenchEnvironmentService } from '../../environment/common/environmentService.js';
@@ -51,7 +52,9 @@ export class BuiltinExtensionsScannerService implements IBuiltinExtensionsScanne
 			if (builtinExtensionsServiceUrl) {
 				let bundledExtensions: IBundledExtension[] = [];
 
-				if (environmentService.isBuilt) {
+				// code-rs (Tauri): the shell lists the built-in extensions in the page, also
+				// for bundled builds, whose build-time list below is empty.
+				if (environmentService.isBuilt && !isTauri()) {
 					// Built time configuration (do NOT modify)
 					bundledExtensions = [/*BUILD->INSERT_BUILTIN_EXTENSIONS*/];
 				} else {
