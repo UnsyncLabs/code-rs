@@ -18,6 +18,7 @@ import { TauriSearchProvider } from '../../../services/search/browser/tauriSearc
 import { ITerminalInstanceService } from '../../terminal/browser/terminal.js';
 import { TauriTerminalBackend } from './tauriTerminalBackend.js';
 import { TauriThemeBackgroundContribution } from './tauriThemeBackground.js';
+import { TauriUpdatesContribution } from './tauriUpdates.js';
 
 /**
  * Wires the native Rust/Tauri services into the web workbench when it is hosted
@@ -73,3 +74,4 @@ class TauriWorkbenchContribution implements IWorkbenchContribution {
 registerWorkbenchContribution2(TauriWorkbenchContribution.ID, TauriWorkbenchContribution, WorkbenchPhase.BlockStartup);
 
 registerWorkbenchContribution2(TauriThemeBackgroundContribution.ID, TauriThemeBackgroundContribution, WorkbenchPhase.AfterRestored);
+registerWorkbenchContribution2(TauriUpdatesContribution.ID, TauriUpdatesContribution, WorkbenchPhase.Eventually);

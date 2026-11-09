@@ -1,76 +1,115 @@
-# Visual Studio Code - Open Source ("Code - OSS")
-[![Feature Requests](https://img.shields.io/github/issues/microsoft/vscode/feature-request.svg)](https://github.com/microsoft/vscode/issues?q=is%3Aopen+is%3Aissue+label%3Afeature-request+sort%3Areactions-%2B1-desc)
-[![Bugs](https://img.shields.io/github/issues/microsoft/vscode/bug.svg)](https://github.com/microsoft/vscode/issues?utf8=✓&q=is%3Aissue+is%3Aopen+label%3Abug)
+# code-rs
 
-## The Repository
+**VS Code without Electron.** code-rs runs the Visual Studio Code workbench inside a
+[Tauri 2](https://tauri.app) shell written in Rust. The editor you know is unchanged;
+what is underneath is not.
 
-This repository ("`Code - OSS`") is where we (Microsoft) develop the [Visual Studio Code](https://code.visualstudio.com) product together with the community. Not only do we work on code and issues here, but we also publish our [roadmap](https://github.com/microsoft/vscode/wiki/Roadmap), [monthly iteration plans](https://github.com/microsoft/vscode/wiki/Iteration-Plans), and our [endgame plans](https://github.com/microsoft/vscode/wiki/Running-the-Endgame). This source code is available to everyone under the standard [MIT license](https://github.com/microsoft/vscode/blob/main/LICENSE.txt).
+> **code-rs is a fork of [microsoft/vscode](https://github.com/microsoft/vscode)
+> ("Code - OSS", MIT licensed).** It is not affiliated with, endorsed by or supported by
+> Microsoft. "Visual Studio Code" and "VS Code" are trademarks of Microsoft; code-rs does
+> not use the Microsoft product build, marketplace or branding.
 
-## Visual Studio Code
+## What changed compared to VS Code
 
-<p align="center">
-  <img alt="VS Code in action" src="https://github.com/user-attachments/assets/56af271c-949d-454c-a3ea-16188c063414">
-</p>
+| Area | VS Code | code-rs |
+|---|---|---|
+| Shell | Electron (Chromium + Node.js in every window) | **Tauri 2 (Rust)** + the system WebView (WebView2 / WebKit) |
+| File system, file watching | Node.js in the main process | **Rust** (`std::fs`, `notify`) |
+| Text and file search | ripgrep binary | **Rust** ripgrep crates (`grep`, `ignore`) in-process |
+| Integrated terminal | node-pty | **Rust** (`portable-pty`, ConPTY on Windows) |
+| Extension host | Electron utility process | Node.js child process **spawned and relayed by Rust** (Node only runs extensions) |
+| Serving the workbench | Electron `vscode-file://` | Rust `vscode-app://` protocol, plus an isolated loopback origin per webview |
+| Telemetry | On by default | **Off by default.** The code is intact, not removed: turn it on in Settings (`telemetry.telemetryLevel`) if you want to |
+| Extension marketplace | Microsoft Marketplace | **[Open VSX](https://open-vsx.org)** (installs `.vsix` packages to disk through Rust) |
+| Long-line wrapping (`wrappingStrategy: advanced`) | Hidden DOM + `getClientRects()` | **[Pretext](https://github.com/chenglou/pretext)**: canvas-measured, cached, pure arithmetic ([benchmark](#pretext-line-wrapping-benchmark)) |
+| Copilot | Built in | **Not shipped** (proprietary; ~1 GB of the build) |
+| Updates | Microsoft update service | Signed GitHub releases. A **one-time** prompt on first launch lets you turn them off (not recommended); *Settings → Updates* has a check-and-install button |
 
-[Visual Studio Code](https://code.visualstudio.com) is a distribution of the `Code - OSS` repository with Microsoft-specific customizations released under a traditional [Microsoft product license](https://code.visualstudio.com/License/).
+Other improvements made along the way:
 
-[Visual Studio Code](https://code.visualstudio.com) combines the simplicity of a code editor with what developers need for their core edit-build-debug cycle. It provides comprehensive code editing, navigation, and understanding support along with lightweight debugging, a rich extensibility model, and lightweight integration with existing tools.
+- **No white flash on reload.** The theme background is applied to the native window, and the
+  desktop "parts splash" (the layout skeleton VS Code shows while loading) is drawn while a
+  window reloads.
+- **Adding a folder to the workspace does not reload the window.** It switches the workspace
+  and its storage in place, like the desktop build.
+- **Native dialogs** for Open File/Folder and Save, and *Close Folder* / *Add Folder to
+  Workspace* in the File menu.
 
-Visual Studio Code is updated monthly with new features and bug fixes. You can download it for Windows, macOS, and Linux on the [Visual Studio Code website](https://code.visualstudio.com/Download). To get the latest releases every day, install the [Insiders build](https://code.visualstudio.com/insiders).
+## Pretext line-wrapping benchmark
 
-## Contributing
+Line wrapping for `editor.wrappingStrategy: "advanced"` (used with proportional fonts) is
+computed with Pretext. Inside the app (WebView2), on **54,042 lines / 2.3 MB of JSON**
+(pretty-printed, long strings, minified chunks, and 2,000 lines of emoji, Chinese, Arabic and
+mixed scripts), Segoe UI 14px, median of 3 runs:
 
-There are many ways in which you can participate in this project, for example:
+| Scenario | Before (DOM) | Pretext | Speed-up | Identical line breaks |
+|---|---|---|---|---|
+| Wrap at 80 columns | 1021 ms | 149 ms | **6.9×** | 100% |
+| Wrap at 120 columns | 967 ms | 141 ms | **6.8×** | 100% |
+| Re-wrap at 4 widths (window resize) | 4023 ms | 687 ms | **5.9×** | — |
 
-* [Submit bugs and feature requests](https://github.com/microsoft/vscode/issues), and help us verify them as they are checked in
-* Review [source code changes](https://github.com/microsoft/vscode/pulls)
-* Review the [documentation](https://github.com/microsoft/vscode-docs) and make pull requests for anything from typos to new content.
+With a monospace font (Consolas): 986 ms → 118 ms (**8.4×**), 100% identical. No line fell
+back to the DOM path during the benchmark. Details and the script to reproduce it:
+[docs/rust-rewrite/PRETEXT.md](docs/rust-rewrite/PRETEXT.md).
 
-If you are interested in fixing issues and contributing directly to the codebase, please see the document [How to Contribute](https://github.com/microsoft/vscode/wiki/How-to-Contribute), which covers the following:
+## Download
 
-* [How to build and run from source](https://github.com/microsoft/vscode/wiki/How-to-Contribute)
-* [The development workflow, including debugging and running tests](https://github.com/microsoft/vscode/wiki/How-to-Contribute#debugging)
-* [Coding guidelines](https://github.com/microsoft/vscode/wiki/Coding-Guidelines)
-* [Submitting pull requests](https://github.com/microsoft/vscode/wiki/How-to-Contribute#pull-requests)
-* [Finding an issue to work on](https://github.com/microsoft/vscode/wiki/How-to-Contribute#where-to-contribute)
-* [Contributing to translations](https://aka.ms/vscodeloc)
+Installers are attached to each [release](https://github.com/UnsyncLabs/code-rs/releases):
 
-## Feedback
+| Platform | Formats | Approx. download size |
+|---|---|---|
+| Windows x64 | `.exe` (NSIS), `.msi` | ~120 MB (measured: 118 MiB) |
+| Linux x64 | `.deb`, `.rpm`, `.AppImage`, Arch `.pkg.tar.zst` | ~110–150 MB (estimated) |
+| macOS (Apple Silicon, Intel) | `.dmg` | ~110–150 MB (estimated) |
 
-* Ask a question on [Stack Overflow](https://stackoverflow.com/questions/tagged/vscode)
-* [Request a new feature](CONTRIBUTING.md)
-* Upvote [popular feature requests](https://github.com/microsoft/vscode/issues?q=is%3Aopen+is%3Aissue+label%3Afeature-request+sort%3Areactions-%2B1-desc)
-* [File an issue](https://github.com/microsoft/vscode/issues)
-* Connect with the extension author community on [GitHub Discussions](https://github.com/microsoft/vscode-discussions/discussions) or [Slack](https://aka.ms/vscode-dev-community)
-* Follow [@code](https://x.com/code) and let us know what you think!
+Installed size is about **600 MB**, most of it the unminified workbench and the bundled Node.js
+runtime used by the extension host. These numbers are approximate and expected to shrink:
+minifying the workbench is on the roadmap.
 
-See our [wiki](https://github.com/microsoft/vscode/wiki/Feedback-Channels) for a description of each of these channels and information on some other available community-driven channels.
+Installers are **not code-signed yet**: Windows SmartScreen and macOS Gatekeeper will warn on
+first launch. Updates themselves are signed and verified.
 
-## Related Projects
+## Python and other languages
 
-Many of the core components and extensions to VS Code live in their own repositories on GitHub. For example, the [node debug adapter](https://github.com/microsoft/vscode-node-debug) and the [mono debug adapter](https://github.com/microsoft/vscode-mono-debug) repositories are separate from each other. For a complete list, please visit the [Related Projects](https://github.com/microsoft/vscode/wiki/Related-Projects) page on our [wiki](https://github.com/microsoft/vscode/wiki).
+Microsoft-only extensions (Pylance, C# Dev Kit, Remote, Live Share…) cannot be used outside
+Microsoft's VS Code. Open alternatives work well. For Python, for example:
+`ms-python.python` + `detachhead.basedpyright` (hover documentation, completion, type checking)
++ `ms-python.autopep8` + `ms-python.isort`.
 
-## Bundled Extensions
+## Building from source
 
-VS Code includes a set of built-in extensions located in the [extensions](extensions) folder, including grammars and snippets for many languages. Extensions that provide rich language support (inline suggestions, Go to Definition) for a language have the suffix `language-features`. For example, the `json` extension provides coloring for `JSON` and the `json-language-features` extension provides rich language support for `JSON`.
+Requirements: Rust (stable), Node.js (version in `.nvmrc`), and on Windows the Visual Studio
+C++ build tools; on Linux `libwebkit2gtk-4.1-dev` and friends (see
+[.github/workflows/release.yml](.github/workflows/release.yml)).
 
-## Development Container
+```bash
+npx pnpm@12.16.0 install
+node build/next/index.ts transpile                            # workbench -> out/
+npx pnpm@12.16.0 run gulp compile-extensions compile-extension-media
+cd src-tauri && cargo tauri dev -- -- /path/to/folder         # run from source
+```
 
-This repository includes a Visual Studio Code Dev Containers / GitHub Codespaces development container.
+Release packaging: `node scripts/code-rs/stage-app.mjs` assembles the runtime files, then
+`cargo tauri build`. Architecture notes live in [docs/rust-rewrite](docs/rust-rewrite).
 
-* For [Dev Containers](https://aka.ms/vscode-remote/download/containers), use the **Dev Containers: Clone Repository in Container Volume...** command, which creates a Docker volume for better disk I/O on macOS and Windows.
-  * If you already have VS Code and Docker installed, you can also click [here](https://vscode.dev/redirect?url=vscode://ms-vscode-remote.remote-containers/cloneInVolume?url=https://github.com/microsoft/vscode) to get started. This will cause VS Code to automatically install the Dev Containers extension if needed, clone the source code into a container volume, and spin up a dev container for use.
+## Status
 
-* For Codespaces, install the [GitHub Codespaces](https://marketplace.visualstudio.com/items?itemName=GitHub.codespaces) extension in VS Code, and use the **Codespaces: Create New Codespace** command.
+Early, but usable day to day: editing, search, terminal, Git, webviews, Markdown preview and
+Node extensions (including Python) work. Known gaps: multi-window, debugging adapters that need
+native modules not yet ported, workbench minification, signed installers.
 
-Docker / the Codespace should have at least **4 cores and 6 GB of RAM (8 GB recommended)** to run a full build. See the [development container README](.devcontainer/README.md) for more information.
+## Credits
 
-## Code of Conduct
-
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/). For more information, see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+- **Ideas, direction and testing: humans** — [neokuze](https://github.com/neokuze) /
+  [UnsyncLabs](https://github.com/UnsyncLabs). Every feature and decision in this fork, from
+  dropping Electron to adopting Pretext, keeping telemetry intact but off, and the update
+  prompt, came from them.
+- **Code co-authored by [Claude Code](https://claude.com/claude-code)** (Anthropic), with parts
+  of the Rust services drafted by Kiro. Commits carry the corresponding `Co-Authored-By` lines.
+- Built on the work of the **VS Code team and community** ([microsoft/vscode](https://github.com/microsoft/vscode)),
+  [Tauri](https://tauri.app), [Pretext](https://github.com/chenglou/pretext),
+  [Open VSX](https://open-vsx.org) and the Rust crates listed in `src-tauri/Cargo.toml`.
 
 ## License
 
-Copyright (c) Microsoft Corporation. All rights reserved.
-
-Licensed under the [MIT](LICENSE.txt) license.
+[MIT](LICENSE.txt), as the upstream project. Third-party notices: [ThirdPartyNotices.txt](ThirdPartyNotices.txt).

@@ -22,7 +22,50 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../dist-app/app/": "app/",
+      "../dist-app/node/": "node/"
+    },
+    "category": "DeveloperTool",
+    "shortDescription": "VS Code without Electron: a Tauri (Rust) shell around the VS Code workbench",
+    "longDescription": "code-rs runs the VS Code workbench in a Tauri 2 (Rust) shell instead of Electron: native file system, search, terminal and extension host management in Rust, with Node used only to run extensions. Telemetry is off by default.",
+    "publisher": "UnsyncLabs",
+    "homepage": "https://github.com/UnsyncLabs/code-rs",
+    "license": "MIT",
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "webkit2gtk4.1",
+          "gtk3"
+        ]
+      }
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "createUpdaterArtifacts": true
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY4MzQwREFENTZFM0ZFMTQKUldRVS91TldyUTAwK0RwUldsbVc0aDZpNi81UDJKL2VIRGpyQ09zaXgxMVArNDNOMkdMNzB5V1EK",
+      "endpoints": [
+        "https://github.com/UnsyncLabs/code-rs/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
 }

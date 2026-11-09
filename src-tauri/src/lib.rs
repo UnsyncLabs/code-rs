@@ -31,6 +31,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
         // Serves the workbench (out/, extensions/) from disk: no Node web server.
         .register_uri_scheme_protocol(services::app_protocol::SCHEME, |_ctx, request| {
             services::app_protocol::handle(request)
@@ -41,6 +43,8 @@ pub fn run() {
         .manage(services::extension_host::ExtensionHostState::default())
         .setup(|app| {
             use tauri::Manager as _;
+            // Where out/, extensions/ and node_modules/ live (repo in dev, bundle in release).
+            services::app_protocol::init_app_root(app.handle());
             // Search cancellation state (services/search.rs).
             app.manage(services::search::SearchState::default());
             // Filesystem watcher state (services/watcher.rs).
@@ -48,7 +52,7 @@ pub fn run() {
 
             // Main window. Optional first CLI arg = folder to open.
             let mut url = services::app_protocol::start_url();
-            if let Some(folder) = std::env::args().nth(1).filter(|a| !a.starts_with('-')) {
+            if let Some(folder) = std::env::args().nth(1).filter(|a| !a.is_empty() && !a.starts_with('-')) {
                 let folder = std::fs::canonicalize(&folder)
                     .map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string())
                     .unwrap_or(folder);
@@ -110,6 +114,11 @@ pub fn run() {
             services::extension_install::extension_install_vsix,
             services::extension_install::extension_uninstall_folder,
             services::extension_install::host_target_platform,
+            // --- updates ---
+            services::updater::updater_info,
+            services::updater::updater_check,
+            services::updater::updater_install,
+            services::updater::updater_open_releases,
         ])
         .run(tauri::generate_context!())
         .expect("error while running code-rs tauri application");

@@ -169,11 +169,13 @@ fn resolve_node_path<R: Runtime>(
         }
     }
 
-    // Bundled runtime: <resourceDir>/node[.exe] — convention only; optional.
+    // Bundled runtime: <resourceDir>/node/node[.exe] (release builds, see
+    // scripts/code-rs/stage-app.mjs) or <resourceDir>/node[.exe].
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let bundled = resource_dir.join(node_bin_name());
-        if bundled.exists() {
-            return Ok(bundled);
+        for bundled in [resource_dir.join("node").join(node_bin_name()), resource_dir.join(node_bin_name())] {
+            if bundled.exists() {
+                return Ok(bundled);
+            }
         }
     }
 
@@ -340,11 +342,13 @@ pub async fn start_extension_host<R: Runtime>(
 
     // On Windows, detach into a new process group so a shell crash does not
     // brutally tear down the extension host (mirrors `detached: isWindows`).
+    // CREATE_NO_WINDOW keeps release builds (GUI subsystem) from flashing a
+    // console window for node.exe.
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     }
 
     let mut child = cmd

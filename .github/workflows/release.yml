@@ -1,0 +1,154 @@
+# code-rs release: builds installers for Windows, Linux and macOS and attaches
+# them to a draft GitHub release.
+#
+#   Windows: NSIS (.exe) and MSI
+#   Linux:   .deb, .rpm, AppImage, and an Arch package (.pkg.tar.zst)
+#   macOS:   .dmg / .app for Apple Silicon and Intel
+#
+# Trigger: push a tag `v*` (e.g. v0.1.0) or run manually with a tag name.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (e.g. v0.1.0)
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  PNPM: npx -y pnpm@12.16.0
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-2022
+            platform: win32
+            arch: x64
+            rust_target: x86_64-pc-windows-msvc
+          - name: Linux x64
+            # Oldest supported Ubuntu keeps the AppImage/deb glibc requirement low.
+            os: ubuntu-22.04
+            platform: linux
+            arch: x64
+            rust_target: x86_64-unknown-linux-gnu
+          - name: macOS Apple Silicon
+            os: macos-14
+            platform: darwin
+            arch: arm64
+            rust_target: aarch64-apple-darwin
+          - name: macOS Intel
+            os: macos-13
+            platform: darwin
+            arch: x64
+            rust_target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.rust_target }}
+
+      - name: Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libxkbfile-dev libx11-dev libsecret-1-dev libkrb5-dev rpm
+
+      - name: Install dependencies
+        shell: bash
+        run: $PNPM install --frozen-lockfile
+
+      - name: Build workbench and built-in extensions
+        shell: bash
+        run: |
+          node build/next/index.ts transpile
+          cp node_modules/@vscode/codicons/dist/codicon.ttf out/vs/base/browser/ui/codicons/codicon/codicon.ttf
+          $PNPM run gulp compile-extensions compile-extension-media
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Stage runtime files (workbench, extensions, deps, Node)
+        shell: bash
+        run: node scripts/code-rs/stage-app.mjs --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+
+      - name: Build installers and upload to the draft release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the updater artifacts; the public key is in src-tauri/tauri.conf.json.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: .
+          tauriScript: npx -y @tauri-apps/cli@2
+          args: --target ${{ matrix.rust_target }}
+          tagName: ${{ env.TAG }}
+          releaseName: code-rs ${{ env.TAG }}
+          releaseBody: |
+            First builds of code-rs: the VS Code workbench in a Tauri (Rust) shell, without Electron.
+            Telemetry is off by default. Extensions are installed from Open VSX.
+
+            Installers are not code-signed yet: Windows SmartScreen and macOS Gatekeeper will warn on first launch.
+          releaseDraft: true
+          prerelease: true
+          # latest.json for the in-app updater (Windows, macOS, AppImage).
+          includeUpdaterJson: true
+
+  arch:
+    name: Arch Linux package
+    needs: build
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          sparse-checkout: packaging/arch
+
+      - name: Download the .deb from the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pacman -Syu --noconfirm github-cli
+          cd packaging/arch
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*_amd64.deb' -O code-rs.deb
+
+      - name: Build with makepkg
+        run: |
+          useradd -m builder
+          chown -R builder packaging/arch
+          cd packaging/arch
+          VERSION="${TAG#v}"
+          sudo -u builder env CODE_RS_VERSION="$VERSION" makepkg --nodeps --noconfirm
+
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" packaging/arch/*.pkg.tar.zst --clobber

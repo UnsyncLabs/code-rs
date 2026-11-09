@@ -1,0 +1,27 @@
+# Maintainer: UnsyncLabs <https://github.com/UnsyncLabs>
+#
+# Repackages the Debian build produced by the release workflow (Tauri does not
+# emit pacman packages). CI copies the .deb next to this file as code-rs.deb and
+# exports CODE_RS_VERSION before running makepkg.
+
+pkgname=code-rs-bin
+pkgver=${CODE_RS_VERSION:-0.1.0}
+pkgrel=1
+pkgdesc="VS Code without Electron: a Tauri (Rust) shell around the VS Code workbench"
+arch=('x86_64')
+url="https://github.com/UnsyncLabs/code-rs"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'glib2')
+provides=('code-rs')
+conflicts=('code-rs')
+options=('!strip' '!debug')
+source=("code-rs.deb")
+noextract=("code-rs.deb")
+sha256sums=('SKIP')
+
+package() {
+	cd "$srcdir"
+	bsdtar -xf code-rs.deb
+	bsdtar -xf data.tar.* -C "$pkgdir"
+	chmod 755 "$pkgdir"/usr/bin/code-rs
+}

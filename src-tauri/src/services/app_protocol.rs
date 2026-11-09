@@ -33,12 +33,35 @@ fn base_url() -> String {
     start_url().trim_end_matches('/').to_string()
 }
 
-/// Root of the VS Code checkout / bundle that contains `out/` and `extensions/`.
+static APP_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Resolves the app root once at startup:
+/// 1. `VSCODE_APP_ROOT` (explicit override),
+/// 2. release builds: `<resource dir>/app` (assembled by scripts/code-rs/stage-app.mjs),
+/// 3. dev builds: the repository checkout (`<repo>/src-tauri/..`).
+pub fn init_app_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    use tauri::Manager as _;
+    let root = if let Ok(root) = std::env::var("VSCODE_APP_ROOT") {
+        PathBuf::from(root)
+    } else {
+        let bundled = app.path().resource_dir().ok().map(|d| d.join("app"));
+        match bundled {
+            Some(dir) if !cfg!(debug_assertions) && dir.join("out").is_dir() => dunce_canonicalize(&dir).unwrap_or(dir),
+            _ => dev_root(),
+        }
+    };
+    let _ = APP_ROOT.set(root);
+}
+
+/// Root that contains `out/`, `extensions/` and `node_modules/`.
 pub fn app_root() -> PathBuf {
+    APP_ROOT.get().cloned().unwrap_or_else(dev_root)
+}
+
+fn dev_root() -> PathBuf {
     if let Ok(root) = std::env::var("VSCODE_APP_ROOT") {
         return PathBuf::from(root);
     }
-    // Dev builds: the crate lives in <repo>/src-tauri.
     let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     dunce_canonicalize(&dev).unwrap_or(dev)
 }
@@ -184,6 +207,10 @@ fn builtin_extensions(root: &Path) -> serde_json::Value {
         return serde_json::Value::Array(list);
     };
     for entry in entries.flatten() {
+        // The proprietary Copilot extension is not part of code-rs (see stage-app.mjs).
+        if entry.file_name() == "copilot" || entry.file_name() == "node_modules" {
+            continue;
+        }
         let dir = entry.path();
         let Ok(pkg) = std::fs::read_to_string(dir.join("package.json")) else { continue };
         let Ok(package_json) = serde_json::from_str::<serde_json::Value>(&pkg) else { continue };

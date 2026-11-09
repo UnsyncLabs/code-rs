@@ -10,6 +10,7 @@ pub mod extension_install;
 pub mod fs;
 pub mod pty;
 pub mod search;
+pub mod updater;
 pub mod watcher;
 pub mod webview_server;
 pub mod window;
