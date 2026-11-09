@@ -148,6 +148,8 @@ fn render_workbench(root: &Path) -> Result<String, (StatusCode, String)> {
     let config = serde_json::json!({
         "productConfiguration": {
             "enableTelemetry": false,
+            "nameShort": "code-rs",
+            "nameLong": "code-rs",
             // Open VSX: the open extension registry usable by non-Microsoft builds.
             "extensionsGallery": {
                 "serviceUrl": "https://open-vsx.org/vscode/gallery",
