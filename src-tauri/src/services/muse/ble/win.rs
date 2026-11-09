@@ -43,7 +43,7 @@ use super::setup::{SetupController, Transport};
 use super::{SetupParams, RX_UUID, SERVICE_UUID, TX_UUID};
 
 fn guid(s: &str) -> windows::core::Result<GUID> {
-    GUID::try_from(s)
+    Ok(GUID::from(s))
 }
 
 /// Messages from WinRT callbacks to the single protocol worker.
