@@ -22,6 +22,8 @@ import { compare } from '../../../../base/common/strings.js';
 import { IUserDataProfilesService } from '../../../../platform/userDataProfile/common/userDataProfile.js';
 import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { isTauri, tauriInvoke } from '../../../../platform/tauri/common/tauri.js';
+import { Schemas } from '../../../../base/common/network.js';
 
 export class WebExtensionManagementService extends AbstractExtensionManagementService implements IProfileAwareExtensionManagementService {
 
@@ -76,6 +78,11 @@ export class WebExtensionManagementService extends AbstractExtensionManagementSe
 	}
 
 	async getTargetPlatform(): Promise<TargetPlatform> {
+		if (isTauri()) {
+			// code-rs runs extensions in a real Node extension host, so it can
+			// install platform specific (e.g. win32-x64) packages.
+			return (await tauriInvoke<string>('host_target_platform')) as TargetPlatform;
+		}
 		return TargetPlatform.WEB;
 	}
 
@@ -327,8 +334,19 @@ class InstallExtensionTask extends AbstractExtensionTask<ILocalExtension> implem
 		metadata.pinned = this.options.installGivenVersion ? true : (this.options.pinned ?? metadata.pinned);
 
 		this._profileLocation = metadata.isApplicationScoped ? this.userDataProfilesService.defaultProfile.extensionsResource : this.options.profileLocation;
-		const scannedExtension = URI.isUri(this.extension) ? await this.webExtensionsScannerService.addExtension(this.extension, metadata, this.profileLocation)
-			: await this.webExtensionsScannerService.addExtensionFromGallery(this.extension, metadata, this.profileLocation);
+		let scannedExtension: IScannedExtension;
+		if (URI.isUri(this.extension)) {
+			scannedExtension = await this.webExtensionsScannerService.addExtension(this.extension, metadata, this.profileLocation);
+		} else if (isTauri()) {
+			// code-rs: download and extract the VSIX to disk (Rust) and register the
+			// folder, so the extension can run in the Node extension host.
+			const { path } = await tauriInvoke<{ path: string }>('extension_install_vsix', {
+				request: { url: this.extension.assets.download.uri, id: this.extension.identifier.id, version: this.extension.version },
+			});
+			scannedExtension = await this.webExtensionsScannerService.addExtension(URI.file(path), metadata, this.profileLocation);
+		} else {
+			scannedExtension = await this.webExtensionsScannerService.addExtensionFromGallery(this.extension, metadata, this.profileLocation);
+		}
 		return toLocalExtension(scannedExtension);
 	}
 }
@@ -343,7 +361,11 @@ class UninstallExtensionTask extends AbstractExtensionTask<void> implements IUni
 		super();
 	}
 
-	protected doRun(token: CancellationToken): Promise<void> {
-		return this.webExtensionsScannerService.removeExtension(this.extension, this.options.profileLocation);
+	protected async doRun(token: CancellationToken): Promise<void> {
+		await this.webExtensionsScannerService.removeExtension(this.extension, this.options.profileLocation);
+		if (isTauri() && this.extension.location.scheme === Schemas.file) {
+			// Folder extracted by `extension_install_vsix`; Rust refuses paths outside its extensions dir.
+			await tauriInvoke('extension_uninstall_folder', { path: this.extension.location.fsPath }).catch(() => { /* not ours / already gone */ });
+		}
 	}
 }

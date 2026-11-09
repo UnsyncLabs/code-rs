@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { isTauri } from '../../../../platform/tauri/common/tauri.js';
 import { IBuiltinExtensionsScannerService, ExtensionType, IExtensionIdentifier, IExtension, IExtensionManifest, TargetPlatform, IRelaxedExtensionManifest, parseEnabledApiProposalNames } from '../../../../platform/extensions/common/extensions.js';
 import { IBrowserWorkbenchEnvironmentService } from '../../environment/browser/environmentService.js';
 import { IScannedExtension, IWebExtensionsScannerService, ScanOptions } from '../common/extensionManagement.js';
@@ -706,7 +707,8 @@ export class WebExtensionsScannerService extends Disposable implements IWebExten
 			}
 		}
 
-		if (!this.extensionManifestPropertiesService.canExecuteOnWeb(manifest)) {
+		// code-rs (Tauri): extensions installed to disk also run in the Node extension host.
+		if (!isTauri() && !this.extensionManifestPropertiesService.canExecuteOnWeb(manifest)) {
 			throw new Error(localize('not a web extension', "Cannot add '{0}' because this extension is not a web extension.", manifest.displayName || manifest.name));
 		}
 

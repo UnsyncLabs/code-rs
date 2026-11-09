@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { isTauri } from '../../../../platform/tauri/common/tauri.js';
 import { localize } from '../../../../nls.js';
 import { Event, Emitter } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -568,6 +569,11 @@ export class ExtensionEnablementService extends Disposable implements IWorkbench
 	private _isDisabledByExtensionKind(extension: IExtension): boolean {
 		if (this.extensionManagementServerService.remoteExtensionManagementServer || this.extensionManagementServerService.webExtensionManagementServer) {
 			const installLocation = this.extensionManagementServerService.getExtensionInstallLocation(extension);
+			if (isTauri() && installLocation === ExtensionInstallLocation.Web) {
+				// code-rs: extensions installed here run in the Node extension host
+				// as well as the web worker, so every extension kind is supported.
+				return false;
+			}
 			for (const extensionKind of this.extensionManifestPropertiesService.getExtensionKind(extension.manifest)) {
 				if (extensionKind === 'ui') {
 					if (installLocation === ExtensionInstallLocation.Local) {

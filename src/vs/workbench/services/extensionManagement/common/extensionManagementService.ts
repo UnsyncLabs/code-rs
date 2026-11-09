@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { isTauri } from '../../../../platform/tauri/common/tauri.js';
 import { Emitter, Event, EventMultiplexer } from '../../../../base/common/event.js';
 import {
 	ILocalExtension, IGalleryExtension, IExtensionIdentifier, IExtensionsControlManifest, IExtensionGalleryService, InstallOptions, UninstallOptions, InstallExtensionResult, ExtensionManagementError, ExtensionManagementErrorCode, Metadata, InstallOperation, EXTENSION_INSTALL_SOURCE_CONTEXT, InstallExtensionInfo,
@@ -405,7 +406,7 @@ export class ExtensionManagementService extends CommontExtensionManagementServic
 		}
 		if (this.extensionManagementServerService.webExtensionManagementServer
 			&& await this.extensionManagementServerService.webExtensionManagementServer.extensionManagementService.canInstall(gallery) === true
-			&& this.extensionManifestPropertiesService.canExecuteOnWeb(manifest)) {
+			&& this.canRunOnWebServer(manifest)) {
 			return true;
 		}
 		return new MarkdownString().appendText(localize('cannot be installed', "Cannot install the '{0}' extension because it is not available in this setup.", gallery.displayName || gallery.name));
@@ -418,7 +419,7 @@ export class ExtensionManagementService extends CommontExtensionManagementServic
 		if (this.extensionManagementServerService.remoteExtensionManagementServer && this.extensionManifestPropertiesService.canExecuteOnWorkspace(extension.manifest)) {
 			return true;
 		}
-		if (this.extensionManagementServerService.webExtensionManagementServer && this.extensionManifestPropertiesService.canExecuteOnWeb(extension.manifest)) {
+		if (this.extensionManagementServerService.webExtensionManagementServer && this.canRunOnWebServer(extension.manifest)) {
 			return true;
 		}
 		return new MarkdownString().appendText(localize('cannot be installed', "Cannot install the '{0}' extension because it is not available in this setup.", extension.manifest.displayName ?? extension.identifier.id));
@@ -730,12 +731,27 @@ export class ExtensionManagementService extends CommontExtensionManagementServic
 			}
 		}
 
+		// code-rs (Tauri): the web server installs to disk and its extensions run in
+		// the Node extension host, so it accepts any extension kind.
+		if (isTauri() && this.extensionManagementServerService.webExtensionManagementServer && !servers.includes(this.extensionManagementServerService.webExtensionManagementServer)) {
+			servers.push(this.extensionManagementServerService.webExtensionManagementServer);
+		}
+
 		// Local server can accept any extension.
 		if (this.extensionManagementServerService.localExtensionManagementServer && !servers.includes(this.extensionManagementServerService.localExtensionManagementServer)) {
 			servers.push(this.extensionManagementServerService.localExtensionManagementServer);
 		}
 
 		return servers;
+	}
+
+	/**
+	 * Whether the web extension management server can host an extension. Inside
+	 * code-rs (Tauri) extensions installed there also run in the Node extension
+	 * host, so any extension qualifies.
+	 */
+	private canRunOnWebServer(manifest: IExtensionManifest): boolean {
+		return isTauri() || this.extensionManifestPropertiesService.canExecuteOnWeb(manifest);
 	}
 
 	private isExtensionsSyncEnabled(): boolean {
@@ -1025,6 +1041,9 @@ export class ExtensionManagementService extends CommontExtensionManagementServic
 	}
 
 	private async checkInstallingExtensionOnWeb(extension: IGalleryExtension, manifest: IExtensionManifest): Promise<void> {
+		if (isTauri()) {
+			return; // code-rs runs extensions in a full Node extension host: no web limitations
+		}
 		if (this.servers.length !== 1 || this.servers[0] !== this.extensionManagementServerService.webExtensionManagementServer) {
 			return;
 		}

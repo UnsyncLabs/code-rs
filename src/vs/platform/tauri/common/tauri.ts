@@ -77,7 +77,7 @@ export interface ITauriOpenDialogOptions {
 	readonly filters?: ITauriDialogFilter[];
 }
 
-function tauriInvoke<T>(cmd: string, args?: unknown): Promise<T> {
+export function tauriInvoke<T>(cmd: string, args?: unknown): Promise<T> {
 	const internals = (globalThis as unknown as ITauriInvokeWindow).__TAURI_INTERNALS__;
 	if (!internals) {
 		return Promise.reject(new Error('Tauri runtime not available'));
