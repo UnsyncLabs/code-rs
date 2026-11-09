@@ -71,6 +71,8 @@ pub fn run() {
                 tauri::WebviewUrl::External(url.parse().expect("valid start url")),
             )
             .title("code-rs")
+            // Windows: the workbench draws the title bar and window controls.
+            .decorations(!services::window::custom_frame())
             // Paint with the last theme background while pages (re)load: no white flash.
             .background_color(
                 services::window::parse_color(&services::window::saved_background(app.handle()))
@@ -112,6 +114,12 @@ pub fn run() {
             services::window::set_title,
             services::window::toggle_fullscreen,
             services::window::set_theme_background,
+            services::window::window_minimize,
+            services::window::window_toggle_maximize,
+            services::window::window_close,
+            services::window::window_is_maximized,
+            services::window::window_start_drag,
+            services::window::window_has_custom_frame,
             // --- extension_host ---
             services::extension_host::start_extension_host,
             services::extension_host::stop_extension_host,

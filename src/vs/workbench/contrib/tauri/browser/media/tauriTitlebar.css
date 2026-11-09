@@ -1,0 +1,15 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* code-rs (Tauri, Windows): the window has no native frame, so the workbench draws the
+   minimize / maximize / close controls, sized like the desktop (Electron) build. */
+.monaco-workbench.tauri-custom-frame .part.titlebar .titlebar-right .window-controls-container {
+	width: 138px;
+	height: 100%;
+}
+
+.monaco-workbench.tauri-custom-frame .part.titlebar .titlebar-left .window-controls-container {
+	width: 0;
+}

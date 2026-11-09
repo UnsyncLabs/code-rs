@@ -79,3 +79,44 @@ pub fn parse_color(s: &str) -> Option<Color> {
         _ => None,
     }
 }
+
+// --- Window controls drawn by the workbench (Windows: no native frame) -------
+
+#[tauri::command]
+pub fn window_minimize(window: tauri::Window) -> Result<(), String> {
+    window.minimize().map_err(|e| e.to_string())
+}
+
+/// Toggles maximize/restore; returns the new maximized state.
+#[tauri::command]
+pub fn window_toggle_maximize(window: tauri::Window) -> Result<bool, String> {
+    let maximized = window.is_maximized().map_err(|e| e.to_string())?;
+    if maximized { window.unmaximize() } else { window.maximize() }.map_err(|e| e.to_string())?;
+    Ok(!maximized)
+}
+
+#[tauri::command]
+pub fn window_close(window: tauri::Window) -> Result<(), String> {
+    window.close().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn window_is_maximized(window: tauri::Window) -> Result<bool, String> {
+    window.is_maximized().map_err(|e| e.to_string())
+}
+
+/// Starts moving the window with the mouse (title bar drag).
+#[tauri::command]
+pub fn window_start_drag(window: tauri::Window) -> Result<(), String> {
+    window.start_dragging().map_err(|e| e.to_string())
+}
+
+/// Whether the workbench draws its own window controls (no native frame).
+pub fn custom_frame() -> bool {
+    cfg!(windows)
+}
+
+#[tauri::command]
+pub fn window_has_custom_frame() -> bool {
+    custom_frame()
+}

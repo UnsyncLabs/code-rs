@@ -21,6 +21,7 @@ import { TauriThemeBackgroundContribution } from './tauriThemeBackground.js';
 import { TauriUpdatesContribution } from './tauriUpdates.js';
 import { TauriMcpContribution } from './tauriMcp.js';
 import { TauriExtensionAuditContribution } from './tauriExtensionAudit.js';
+import { TauriWindowControlsContribution } from './tauriWindowControls.js';
 
 /**
  * Wires the native Rust/Tauri services into the web workbench when it is hosted
@@ -79,3 +80,4 @@ registerWorkbenchContribution2(TauriThemeBackgroundContribution.ID, TauriThemeBa
 registerWorkbenchContribution2(TauriUpdatesContribution.ID, TauriUpdatesContribution, WorkbenchPhase.Eventually);
 registerWorkbenchContribution2(TauriMcpContribution.ID, TauriMcpContribution, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(TauriExtensionAuditContribution.ID, TauriExtensionAuditContribution, WorkbenchPhase.AfterRestored);
+registerWorkbenchContribution2(TauriWindowControlsContribution.ID, TauriWindowControlsContribution, WorkbenchPhase.BlockRestore);
