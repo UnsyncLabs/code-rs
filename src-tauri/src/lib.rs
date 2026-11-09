@@ -139,6 +139,7 @@ pub fn run() {
             services::mcp::mcp_set_enabled,
             services::mcp::mcp_respond,
             services::mcp::mcp_emit_event,
+            services::mcp::mcp_tools,
             services::mcp::mcp_status,
             services::mcp::mcp_recent_activity,
             // --- assistant (AI providers) ---

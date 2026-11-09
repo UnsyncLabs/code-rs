@@ -35,6 +35,7 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { TauriMcpWriteTools, WRITE_TOOLS } from './tauriMcpWriteTools.js';
+import { setAgentToolExecutor } from './tauriAgentTools.js';
 import { ITextFileService } from '../../../services/textfile/common/textfiles.js';
 import { IWorkbenchExtensionManagementService } from '../../../services/extensionManagement/common/extensionManagement.js';
 import { listProviders, reviewCode, reviewExtensionReport } from './tauriAssistant.js';
@@ -130,6 +131,8 @@ export class TauriMcpContribution extends Disposable implements IWorkbenchContri
 			return;
 		}
 		this.writeTools = this._register(instantiationService.createInstance(TauriMcpWriteTools));
+		setAgentToolExecutor((tool, args, client) => this.execute(tool, args, client, action => { action(); }));
+		this._register({ dispose: () => setAgentToolExecutor(undefined) });
 		this.listen();
 		this.applyEnabled();
 		instantiationService.invokeFunction(accessor => this.forwardEvents(accessor.get(ITextFileService), accessor.get(IWorkbenchExtensionManagementService)));
@@ -194,22 +197,26 @@ export class TauriMcpContribution extends Disposable implements IWorkbenchContri
 		// Some tools reload or reshape the window; they answer first and act afterwards.
 		let after: (() => unknown) | undefined;
 		try {
-			if ((UI_TOOLS.has(request.tool) || WRITE_TOOLS.has(request.tool)) && !this.trustService.isWorkspaceTrusted()) {
-				throw new Error('This workspace is not trusted: MCP clients can only read it.');
-			}
-			const args = request.args ?? {};
-			const written = await this.writeTools?.run(request.tool, args, request.client ?? 'unknown', {
-				resolve: path => this.resolveInWorkspace(path),
-				toPath: uri => this.toPath(uri),
-				folders: () => this.folders().map(f => f.uri),
-			});
-			const result = written !== undefined ? written : await this.run(request.tool, args, action => { after = action; });
+			const result = await this.execute(request.tool, request.args ?? {}, request.client ?? 'unknown', action => { after = action; });
 			await tauriInvoke('mcp_respond', { id: request.id, result: result ?? null, error: null });
 		} catch (error) {
 			await tauriInvoke('mcp_respond', { id: request.id, result: null, error: error instanceof Error ? error.message : String(error) });
 			return;
 		}
 		after?.();
+	}
+
+	/** Runs a tool for an MCP client or for the built-in chat agent (same rules and approvals). */
+	private async execute(tool: string, args: Record<string, unknown>, client: string, defer: (action: () => unknown) => void): Promise<unknown> {
+		if ((UI_TOOLS.has(tool) || WRITE_TOOLS.has(tool)) && !this.trustService.isWorkspaceTrusted()) {
+			throw new Error('This workspace is not trusted: AI tools can only read it.');
+		}
+		const written = await this.writeTools?.run(tool, args, client, {
+			resolve: path => this.resolveInWorkspace(path),
+			toPath: uri => this.toPath(uri),
+			folders: () => this.folders().map(f => f.uri),
+		});
+		return written !== undefined ? written : this.run(tool, args, defer);
 	}
 
 	private folders() {

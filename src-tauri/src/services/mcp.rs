@@ -250,6 +250,12 @@ pub fn mcp_emit_event(kind: String, data: Value) {
         "params": { "level": "info", "logger": "code-rs", "data": { "event": kind, "data": data } } }));
 }
 
+/// The MCP tool catalog, also used by the built-in chat agent (same tools, same approvals).
+#[tauri::command]
+pub fn mcp_tools() -> Value {
+    tools()
+}
+
 /// Result of a tool call executed by the workbench.
 #[tauri::command]
 pub fn mcp_respond(id: u64, result: Option<Value>, error: Option<String>) {
