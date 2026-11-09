@@ -408,7 +408,7 @@ registerAction2(class extends Action2 {
 	}
 
 	async run(accessor: ServicesAccessor): Promise<void> {
-		await accessor.get(ICommandService).executeCommand('workbench.action.chat.toggle');
+		await accessor.get(ICommandService).executeCommand('workbench.action.chat.open');
 	}
 });
 

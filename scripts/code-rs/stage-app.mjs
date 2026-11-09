@@ -52,7 +52,8 @@ log('copied out/');
 // shared extensions/node_modules build tooling except `typescript`, which the
 // TypeScript language features extension loads at runtime (tsserver).
 const extensionsRoot = path.join(root, 'extensions');
-const excludedExtensions = new Set(['copilot']);
+// Copilot is proprietary; the others are VS Code's own test extensions.
+const excludedExtensions = new Set(['copilot', 'vscode-api-tests', 'vscode-colorize-tests', 'vscode-colorize-perf-tests', 'vscode-test-resolver']);
 const keptSharedExtensionModules = new Set(['typescript']);
 const skipInExtensions = new Set(['src', 'test', '.vscode-test', '.vscode', 'build', 'cgmanifest.json', 'tsconfig.json', 'tsconfig.tsbuildinfo']);
 fs.cpSync(extensionsRoot, path.join(appDir, 'extensions'), {

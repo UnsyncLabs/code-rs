@@ -49,6 +49,11 @@ class CodeRsModelProvider extends Disposable implements ILanguageModelChatProvid
 		this._register(onDidChangeProviders(() => this._onDidChange.fire()));
 	}
 
+	/** The models service only lists a provider's models after its first change event. */
+	refresh(): void {
+		this._onDidChange.fire();
+	}
+
 	async provideLanguageModelChatInfo(): Promise<ILanguageModelChatMetadataAndIdentifier[]> {
 		let providers: IAssistantProvider[] = [];
 		try {
@@ -126,6 +131,8 @@ export class TauriChatModelsContribution extends Disposable implements IWorkbenc
 		const descriptor = { vendor: CHAT_MODEL_VENDOR, displayName: 'code-rs', configuration: undefined, managementCommand: 'codeRs.assistant.configureProviders', when: undefined };
 		languageModelsService.deltaLanguageModelChatProviderDescriptors([descriptor], []);
 		this._register(toDisposable(() => languageModelsService.deltaLanguageModelChatProviderDescriptors([], [descriptor])));
-		this._register(languageModelsService.registerLanguageModelProvider(CHAT_MODEL_VENDOR, this._register(new CodeRsModelProvider(configurationService))));
+		const provider = this._register(new CodeRsModelProvider(configurationService));
+		this._register(languageModelsService.registerLanguageModelProvider(CHAT_MODEL_VENDOR, provider));
+		provider.refresh();
 	}
 }

@@ -19,6 +19,8 @@ pub const SCHEME: &str = "vscode-app";
 
 /// Path prefix under which the app root is served (like the VS Code server's static route).
 const STATIC_PREFIX: &str = "/static";
+/// Folders under `extensions/` that are not built-in extensions of code-rs.
+const NOT_SHIPPED_EXTENSIONS: &[&str] = &["copilot", "node_modules", "vscode-api-tests", "vscode-colorize-tests", "vscode-colorize-perf-tests", "vscode-test-resolver"];
 
 /// URL the main window should load.
 pub fn start_url() -> String {
@@ -236,8 +238,9 @@ fn builtin_extensions(root: &Path) -> serde_json::Value {
         return serde_json::Value::Array(list);
     };
     for entry in entries.flatten() {
-        // The proprietary Copilot extension is not part of code-rs (see stage-app.mjs).
-        if entry.file_name() == "copilot" || entry.file_name() == "node_modules" {
+        // The proprietary Copilot extension and VS Code's own test extensions are not part
+        // of code-rs (see stage-app.mjs).
+        if NOT_SHIPPED_EXTENSIONS.iter().any(|n| entry.file_name() == *n) {
             continue;
         }
         let dir = entry.path();
