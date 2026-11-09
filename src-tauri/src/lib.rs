@@ -22,6 +22,12 @@ fn urlencode(s: &str) -> String {
         .collect()
 }
 
+/// `code-rs --mcp`: run as a stdio MCP bridge to the running instance instead of
+/// opening a window. Returns the process exit code.
+pub fn mcp_stdio_bridge() -> i32 {
+    services::mcp::stdio_bridge()
+}
+
 /// Builds and runs the Tauri application.
 ///
 /// Marked `#[cfg_attr(mobile, tauri::mobile_entry_point)]` so the same entry
@@ -119,7 +125,17 @@ pub fn run() {
             services::updater::updater_check,
             services::updater::updater_install,
             services::updater::updater_open_releases,
+            // --- MCP server ---
+            services::mcp::mcp_set_enabled,
+            services::mcp::mcp_respond,
+            services::mcp::mcp_status,
+            services::mcp::mcp_recent_activity,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running code-rs tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building code-rs tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                services::mcp::on_exit();
+            }
+        });
 }

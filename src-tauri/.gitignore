@@ -3,3 +3,4 @@
 
 # Tauri generated files
 /gen/schemas/
+target-test/
