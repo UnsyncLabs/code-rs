@@ -1,6 +1,6 @@
 [package]
 name = "code-rs"
-version = "1.2.5"
+version = "1.2.6"
 description = "VS Code workbench running on Tauri 2 (Rust shell replacing Electron)"
 authors = ["code-rs contributors"]
 edition = "2021"
@@ -44,18 +44,6 @@ hkdf = "0.12"
 tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 url = "2"
 
-# BLE GATT peripheral for Muse pairing (services/muse/ble.rs). Windows only:
-# the WinRT GattServiceProvider + BluetoothLEAdvertisementPublisher APIs. Other
-# OSes return a "not supported yet" error, so the crate is target-gated.
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
-    "Foundation",
-    "Foundation_Collections",
-    "Storage_Streams",
-    "Devices_Bluetooth",
-    "Devices_Bluetooth_GenericAttributeProfile",
-    "Devices_Bluetooth_Advertisement",
-] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -84,6 +72,19 @@ tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "macros
 # VSCODE_EXTHOST_IPC_HOOK connection.
 interprocess = { version = "2", features = ["tokio"] }
 # base64 (declared above) is also used for exthost://data framing.
+
+# BLE GATT peripheral for Muse pairing (services/muse/ble.rs). Windows only:
+# the WinRT GattServiceProvider + BluetoothLEAdvertisementPublisher APIs. Other
+# OSes return a "not supported yet" error, so the crate is target-gated.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Storage_Streams",
+    "Devices_Bluetooth",
+    "Devices_Bluetooth_GenericAttributeProfile",
+    "Devices_Bluetooth_Advertisement",
+] }
 
 [features]
 # This feature is used for production builds or when a dev server is not
