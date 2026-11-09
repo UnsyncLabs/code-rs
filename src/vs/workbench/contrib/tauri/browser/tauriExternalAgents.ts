@@ -26,6 +26,11 @@ import { IChatProgress } from '../../chat/common/chatService/chatService.js';
 import { IChatMessage, ILanguageModelChatMetadataAndIdentifier, ILanguageModelChatProvider, ILanguageModelChatResponse, ILanguageModelsService } from '../../chat/common/languageModels.js';
 import { IAgentToolHost, IAgentToolHostService } from './tauriAgentTools.js';
 import { ITauriApprovalService } from './tauriApprovals.js';
+import { IEditorService } from '../../../services/editor/common/editorService.js';
+import { ITextModelService } from '../../../../editor/common/services/resolverService.js';
+import { IModelService } from '../../../../editor/common/services/model.js';
+import { ILanguageService } from '../../../../editor/common/languages/language.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 
 /**
  * External agents (Muse, Antigravity) as entries of the chat model picker. The chat agent
@@ -48,7 +53,13 @@ interface IMuseCommandEvent { callId: string; name: string; args: Record<string,
 interface IAcpAgentInfo { id: string; label: string; command: string; available: boolean }
 
 interface IAcpOption { optionId: string; name: string; kind: string }
-interface IAcpToolCall { toolCallId?: string; title?: string; kind?: string; status?: string }
+interface IAcpDiffContent { type?: string; path?: string; oldText?: string; newText?: string }
+interface IAcpToolCall {
+	toolCallId?: string; title?: string; kind?: string; status?: string;
+	rawInput?: { path?: string; file_path?: string; oldStr?: string; newStr?: string; replace_all?: boolean; content?: string };
+	content?: IAcpDiffContent[];
+	locations?: { path: string }[];
+}
 interface IAcpUpdateEvent { sessionId: string; update: { sessionUpdate?: string; content?: { type?: string; text?: string } } & IAcpToolCall }
 interface IAcpPermissionEvent { sessionId: string; requestId: string; toolCall?: IAcpToolCall; options: IAcpOption[] }
 interface IAcpFsEvent { sessionId: string; requestId: string; op: 'read' | 'write'; path: string; content?: string; line?: number; limit?: number }
@@ -72,6 +83,69 @@ interface IAcpSession {
 	progress?: (parts: IChatProgress[]) => void;
 }
 
+/**
+ * Shows what an ACP agent is about to change (from its tool call) as a diff editor, before
+ * the approval card, like edit_propose does for the built-in agent.
+ */
+class AgentEditPreview extends Disposable {
+	private static readonly SCHEME = 'code-rs-agent-proposal';
+	private readonly texts = new Map<string, string>();
+
+	constructor(
+		textModelService: ITextModelService,
+		modelService: IModelService,
+		languageService: ILanguageService,
+		private readonly editorService: IEditorService,
+		private readonly fileService: IFileService,
+	) {
+		super();
+		this._register(textModelService.registerTextModelContentProvider(AgentEditPreview.SCHEME, {
+			provideTextContent: async resource => {
+				const text = this.texts.get(resource.query);
+				if (text === undefined) {
+					return null;
+				}
+				return modelService.getModel(resource) ?? modelService.createModel(text, languageService.createByFilepathOrFirstLine(URI.file(resource.path)), resource);
+			}
+		}));
+	}
+
+	/** Computes the proposed file from an ACP tool call and opens original <-> proposed. */
+	async show(call: IAcpToolCall | undefined, agent: string): Promise<boolean> {
+		const input = call?.rawInput ?? {};
+		const diff = call?.content?.find(c => c.type === 'diff' && c.path);
+		const path = diff?.path || (typeof input.path === 'string' ? input.path : undefined) || (typeof input.file_path === 'string' ? input.file_path : undefined) || call?.locations?.[0]?.path;
+		if (!path) {
+			return false;
+		}
+		const uri = URI.file(path);
+		let before = '';
+		try {
+			before = (await this.fileService.readFile(uri)).value.toString();
+		} catch { /* new file */ }
+		let after: string | undefined;
+		if (diff && (diff.newText || diff.oldText)) {
+			after = diff.oldText ? before.replace(diff.oldText, diff.newText ?? '') : diff.newText;
+		} else if (typeof input.oldStr === 'string' && typeof input.newStr === 'string') {
+			after = input.replace_all ? before.split(input.oldStr).join(input.newStr) : before.replace(input.oldStr, input.newStr);
+		} else if (typeof input.content === 'string') {
+			after = input.content;
+		}
+		if (after === undefined || after === before) {
+			return false;
+		}
+		const key = generateUuid();
+		this.texts.set(key, after);
+		await this.editorService.openEditor({
+			original: { resource: uri },
+			modified: { resource: URI.from({ scheme: AgentEditPreview.SCHEME, path: uri.path, query: key }) },
+			label: localize('codeRsAgentDiffLabel', "{0} (proposed by {1})", uri.path.split('/').pop(), agent),
+			options: { pinned: false, preserveFocus: true },
+		});
+		return true;
+	}
+}
+
 export class ExternalAgentRouter extends Disposable {
 
 	private readonly museSessions = new Map<string, string>();
@@ -79,8 +153,11 @@ export class ExternalAgentRouter extends Disposable {
 	private readonly acpSessions = new Map<string, IAcpSession>(); // by chat session
 	private readonly acpById = new Map<string, IAcpSession>(); // by ACP session id
 	private acpListening: Promise<void> | undefined;
+	/** Latest tool call per id, so a permission request can show what it will change. */
+	private readonly toolCalls = new Map<string, IAcpToolCall>();
 
 	constructor(
+		private readonly preview: AgentEditPreview,
 		private readonly toolHost: IAgentToolHost,
 		private readonly approvals: ITauriApprovalService,
 		private readonly fileService: IFileService,
@@ -202,6 +279,10 @@ export class ExternalAgentRouter extends Disposable {
 	private onAcpUpdate(e: IAcpUpdateEvent): void {
 		const session = this.acpById.get(e.sessionId);
 		const u = e.update;
+		if (u?.toolCallId && /^tool_call/.test(u.sessionUpdate ?? '')) {
+			const prev = this.toolCalls.get(u.toolCallId) ?? {};
+			this.toolCalls.set(u.toolCallId, { ...prev, ...u, rawInput: u.rawInput ?? prev.rawInput, content: u.content && Array.isArray(u.content) ? u.content : prev.content, locations: u.locations ?? prev.locations });
+		}
 		if (!session?.progress || !u) {
 			return;
 		}
@@ -226,6 +307,8 @@ export class ExternalAgentRouter extends Disposable {
 	private async onAcpPermission(e: IAcpPermissionEvent): Promise<void> {
 		const tool = e.toolCall?.title ?? e.toolCall?.kind ?? 'tool';
 		const label = this.acpById.get(e.sessionId)?.label ?? 'ACP agent';
+		const call = e.toolCall?.toolCallId ? { ...this.toolCalls.get(e.toolCall.toolCallId), ...e.toolCall } : e.toolCall;
+		await this.preview.show(call, label).catch(() => false);
 		let optionId: string | undefined;
 		try {
 			const choice = await this.approvals.request({
@@ -348,6 +431,10 @@ export class TauriExternalAgentsContribution extends Disposable implements IWork
 		@ITauriApprovalService approvals: ITauriApprovalService,
 		@IFileService fileService: IFileService,
 		@IWorkspaceContextService contextService: IWorkspaceContextService,
+		@ITextModelService textModelService: ITextModelService,
+		@IModelService modelService: IModelService,
+		@ILanguageService languageService: ILanguageService,
+		@IEditorService editorService: IEditorService,
 	) {
 		super();
 		if (!isTauri()) {
@@ -359,7 +446,8 @@ export class TauriExternalAgentsContribution extends Disposable implements IWork
 		const provider = this._register(new ExternalAgentsProvider());
 		this._register(languageModelsService.registerLanguageModelProvider(EXTERNAL_AGENTS_VENDOR, provider));
 		provider.refresh();
-		router = this._register(new ExternalAgentRouter(toolHost, approvals, fileService, contextService));
+		const preview = this._register(new AgentEditPreview(textModelService, modelService, languageService, editorService, fileService));
+		router = this._register(new ExternalAgentRouter(preview, toolHost, approvals, fileService, contextService));
 		this._register(toDisposable(() => { router = undefined; }));
 	}
 }

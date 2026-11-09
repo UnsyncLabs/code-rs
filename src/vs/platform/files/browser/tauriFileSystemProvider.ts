@@ -38,6 +38,12 @@ type TauriUnlistenFn = () => void;
 type TauriEventCallback<T> = (event: { payload: T }) => void;
 
 interface ITauriWindow {
+	/** Public API (withGlobalTauri): this is where `event.listen` lives in Tauri 2. */
+	__TAURI__?: {
+		event?: {
+			listen<T>(event: string, handler: TauriEventCallback<T>): Promise<TauriUnlistenFn>;
+		};
+	};
 	__TAURI_INTERNALS__?: ITauriInternals & {
 		// Some Tauri 2 builds expose an event transport here; we probe for it
 		// and gracefully fall back if it is missing.
@@ -119,13 +125,12 @@ export class TauriFileSystemProvider extends Disposable implements IFileSystemPr
 	 * one so incoming `fs://change` events can be matched to the originating
 	 * request via `cId`.
 	 */
-	private watchRequestId = 0;
 
 	/**
 	 * Pending frontend watch disposables keyed by the native watcher id (the
 	 * number returned by the Rust `watch` command). Resolved asynchronously.
 	 */
-	private readonly nativeWatchers = new Map<number, number /* correlationId */>();
+	private readonly nativeWatchers = new Map<number, number | undefined /* correlationId */>();
 
 	private tauriEventUnlisten: TauriUnlistenFn | undefined;
 	private domEventDisposable: IDisposable | undefined;
@@ -265,7 +270,10 @@ export class TauriFileSystemProvider extends Disposable implements IFileSystemPr
 	//#region Watching
 
 	watch(resource: URI, opts: IWatchOptions): IDisposable {
-		const correlationId = opts.correlationId ?? ++this.watchRequestId;
+		// Only correlated watches (opts.correlationId) may tag their events with a cId: the
+		// file service routes cId events to that watch only, so tagging every watch hid all
+		// external changes from editors (they refreshed only when re-opened).
+		const correlationId = opts.correlationId;
 
 		let nativeId: number | undefined;
 		let disposed = false;
@@ -304,10 +312,14 @@ export class TauriFileSystemProvider extends Disposable implements IFileSystemPr
 	 * falls back to a DOM `CustomEvent` bridge that a thin preload can forward.
 	 */
 	private registerChangeListener(): void {
-		const tauri = (globalThis as unknown as ITauriWindow).__TAURI_INTERNALS__;
+		// Tauri 2 exposes `event.listen` on the public `__TAURI__` global; `__TAURI_INTERNALS__`
+		// has no `event` there, which silently disabled file watching (editors only picked up
+		// external changes when re-opened).
+		const w = globalThis as unknown as ITauriWindow;
+		const listen = w.__TAURI__?.event?.listen ?? w.__TAURI_INTERNALS__?.event?.listen;
 
-		if (tauri?.event?.listen) {
-			tauri.event.listen<ITauriFileChange>(FS_CHANGE_EVENT, event => {
+		if (listen) {
+			listen<ITauriFileChange>(FS_CHANGE_EVENT, event => {
 				this.handleNativeChange(event.payload);
 			}).then(unlisten => {
 				this.tauriEventUnlisten = unlisten;
@@ -337,7 +349,7 @@ export class TauriFileSystemProvider extends Disposable implements IFileSystemPr
 		const change: IFileChange = {
 			resource: this.toUri(payload.resource),
 			type: toFileChangeType(payload.type),
-			cId: payload.cId
+			cId: typeof payload.cId === 'number' ? payload.cId : undefined
 		};
 		this._onDidChangeFile.fire([change]);
 	}
