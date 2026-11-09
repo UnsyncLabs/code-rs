@@ -73,7 +73,8 @@ const AGENTS: &[AgentDef] = &[AgentDef {
     id: "antigravity",
     label: "Antigravity",
     command: "agy",
-    args: &["acp"],
+    // code-rs has no telemetry; ask the agent not to send its own either.
+    args: &["acp", "--disable-telemetry"],
 }];
 
 /// One entry of the `acp_agents` reply: a known agent plus whether its command
@@ -654,7 +655,12 @@ fn spawn_supervisor<R: Runtime>(app: AppHandle<R>, session_id: String, mut child
                 for (_, tx) in pending.drain() {
                     let _ = tx.send(Err(RpcError {
                         code: -32000,
-                        message: "ACP agent exited".into(),
+                        // Exit code 2 right away = usage error: the CLI predates `agy acp`.
+                        message: if code == Some(2) {
+                            "the agent exited with a usage error: its CLI is probably too old to support ACP (for Antigravity run `agy update`)".into()
+                        } else {
+                            format!("ACP agent exited (code {})", code.map_or("unknown".to_string(), |c| c.to_string()))
+                        },
                     }));
                 }
             }
@@ -1078,6 +1084,6 @@ mod tests {
         assert!(agents.iter().any(|a| a.id == "antigravity"));
         let anti = agents.iter().find(|a| a.id == "antigravity").unwrap();
         assert_eq!(anti.command, "agy");
-        assert_eq!(anti.args, vec!["acp".to_string()]);
+        assert_eq!(anti.args, vec!["acp".to_string(), "--disable-telemetry".to_string()]);
     }
 }
