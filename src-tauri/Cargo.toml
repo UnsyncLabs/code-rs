@@ -29,12 +29,33 @@ ureq = "3"
 # --- muse gadget service (services/muse.rs) ---
 # Noise_XX_25519_AESGCM_SHA256 is hand-rolled on these RustCrypto primitives
 # because the SDK uses a big-endian AEAD nonce, which `snow` is not wire-
-# compatible with. x25519-dalek for the DH, aes-gcm for the AEAD, hmac (+ the
-# existing sha2) for HKDF. No new async/websocket crate yet: the live session
-# runner is gated on the pairing transport (see docs/rust-rewrite/MUSE_PROTOCOL.md).
+# compatible with. x25519-dalek for the link DH, aes-gcm for both AEADs, hmac
+# (+ the existing sha2) for HKDF. The BLE setup handshake (provision_v2) is
+# P-256 ECDH, so `p256` is added for that curve; HKDF for the record keys uses
+# the `hkdf` crate (RFC 5869, as the SDK's `cryptography.hazmat ... HKDF` does).
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+p256 = { version = "0.13", features = ["ecdh"] }
 aes-gcm = "0.10"
 hmac = "0.12"
+hkdf = "0.12"
+# Live link session (services/muse/link/session.rs): a sync WebSocket client
+# with rustls TLS (no OpenSSL). Only needed for muse_connect/muse_send, which
+# run once the device is paired.
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+url = "2"
+
+# BLE GATT peripheral for Muse pairing (services/muse/ble.rs). Windows only:
+# the WinRT GattServiceProvider + BluetoothLEAdvertisementPublisher APIs. Other
+# OSes return a "not supported yet" error, so the crate is target-gated.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Storage_Streams",
+    "Devices_Bluetooth",
+    "Devices_Bluetooth_GenericAttributeProfile",
+    "Devices_Bluetooth_Advertisement",
+] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

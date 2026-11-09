@@ -9,16 +9,15 @@ as cloned to `/tmp/muse-sdk` (do not vendor it; it is a reference only).
 
 The Rust implementation lives in `src-tauri/src/services/muse.rs` and follows Contract M.
 
-> **Important finding about pairing.** In the reference SDK the *device token* (the
-> `access_token` / `refresh_token` pair the gadget authenticates with) is **not** obtained
-> from the SDK token over HTTP. It is delivered to the gadget by the **Muse phone app over
-> BLE** during setup (`provision_v2`, see `ble_setup.py:237-301`). The SDK token
-> (`mgst_…`) is only a *maker identity* that the gadget stores before pairing and later
-> presents on token refresh; Muse records it at pairing time for attribution
-> (`pair.py:55-96`, `service.py:_warn_if_sdk_token_changed`). There is no
-> SDK-token→device-token exchange endpoint in the SDK. See
-> [Open question: pairing transport](#open-question-pairing-transport) — this is the one
-> part of Contract M that cannot be fully implemented from the SDK source alone.
+> **Pairing is implemented over BLE.** The *device token* (the `access_token` /
+> `refresh_token` pair the gadget authenticates with) is delivered to the gadget
+> by the **Muse phone app over BLE** during setup (`provision_v2`). The SDK token
+> (`mgst_…`) is a *maker identity* the gadget stores before pairing and presents
+> on token refresh; Muse records it at pairing for attribution. There is no
+> SDK-token→device-token HTTP endpoint. code-rs runs a BLE GATT **peripheral**
+> (Windows: WinRT; other OSes return a clear error) so the shipping Muse apps
+> pair with it exactly as they pair with an ESP32 gadget. See
+> [§8 BLE provisioning](#8-ble-provisioning-provision_v2).
 
 ---
 
@@ -34,7 +33,11 @@ unpairing. It is **not** read from a NIC.
 - `node_id` = `"homelink-" + suffix` — the ID Muse knows the device by.
 - `device_id` = `"hatch-link:" + mac` (the `hatch-link:` prefix must not be renamed —
   server/app depend on it, `AGENTS.md` "Say Muse, never Hatch").
-- `ble_name` = `"MuseGadget" + suffix.upper()` (no separator).
+- `ble_name` = `"MuseGadget-" + suffix.upper()`, e.g. `MuseGadget-EF1234`. code-rs
+  follows the **ESP32 firmware** (`esp32/main/identity.c`:
+  `BLE_NAME_PREFIX "-%02X%02X%02X"`), which is what the shipping Muse apps are
+  tested against. (The Linux reference `identity.py` drops the hyphen; we use the
+  firmware's hyphenated form so the apps show the device under the expected name.)
 
 Persisted as `{"mac": "..."}` in `identity.json` in the state dir. We store the non-secret
 identity in `app_config_dir/muse.json` instead (Contract M), keeping secrets in the keychain.
@@ -271,10 +274,10 @@ cannot drive the terminal (`muse_turn._strip_controls`).
 | Contract M command | Behaviour |
 |---|---|
 | `muse_status` | `{ paired, connected, deviceName?, error? }` from in-memory state. |
-| `muse_pair({sdkToken})` | Validate + store SDK token in keychain; run pairing. **See open question.** |
+| `muse_pair({sdkToken})` | Validate + store SDK token in keychain; run the BLE `provision_v2` flow (§8); on success store the device token, mark paired, start the link. |
 | `muse_unpair` | Delete pairing JSON + all keychain secrets; stop the link. |
 | `muse_connect` | Start/keep the background connect loop (idempotent); auto-run at startup when paired. |
-| `muse_set_commands({commands})` | Replace the command set registered with Muse (`commands_v2`). |
+| `muse_set_commands({commands})` | Replace the command set; re-register `commands_v2` live if a session is up. |
 | `muse_send({text, sessionId?, timeoutSecs?})` | `/chat/stream` + `/chat/subscribe` wait → `{ text, sessionId }`. |
 | `muse_command_result({callId, ok, result})` | Answer a relayed `link.invoke` with `link.result`. |
 | event `muse://command` | Emitted on `link.invoke`: `{ callId, name, args }`. |
@@ -283,29 +286,99 @@ cannot drive the terminal (`muse_turn._strip_controls`).
 The SDK's built-in `system.run` / `file.read` / `file.write` are **never** exposed; only
 commands registered via `muse_set_commands` are offered to Muse.
 
-## Open question: pairing transport
-Contract M's `muse_pair({sdkToken})` is specified to "store the token in the keychain, run
-the SDK pairing flow, and resolve when paired". In the reference SDK the pairing flow that
-actually yields a device token is **BLE provisioning driven by the Muse phone app**
-(`ble_setup.py`, `ble_server.py`, `pairing.py` — community pairing v5: P-256 ECDH,
-HKDF-SHA256, AES-256-GCM, `confirm_app`), delivering `access_token`/`refresh_token`/
-`noise_host` via `provision_v2`. There is **no SDK-token→device-token HTTP endpoint** in the
-SDK that a desktop app without a BLE GATT peripheral could call.
+## 8. BLE provisioning (`provision_v2`)
 
-Consequences for code-rs (a desktop Tauri app):
-1. **If code-rs can run a BLE GATT peripheral** (Linux: BlueZ over D-Bus, as the reference
-   does; Windows/macOS: platform BLE peripheral APIs), the full `provision_v2` flow can be
-   ported. This needs a BLE stack not currently in `Cargo.toml` and is platform-specific; it
-   is **not implemented here** and is left as a `TODO` in `muse.rs::muse_pair`.
-2. **Alternative**: if Muse offers a non-BLE pairing path for SDK gadgets (e.g. a
-   gadgets.muse.ai device-code / token-exchange endpoint keyed by the `mgst_` token), that
-   endpoint is not present in this SDK and must be confirmed against Muse's gadget docs before
-   it can be implemented.
+code-rs runs a BLE **GATT peripheral** and lets the Muse phone app provision it,
+exactly as the app provisions an ESP32 gadget. Ported from `ble_setup.py`,
+`ble_server.py`, `ble_framing.py`, `pairing.py` and cross-checked against the
+ESP32 firmware (`esp32/main/ble_server.c`, `link_pairing`). Rust lives in
+`src-tauri/src/services/muse/ble/` (`framing.rs`, `pairing.rs`, `setup.rs`, plus
+`win.rs` for Windows / `stub.rs` elsewhere).
 
-Everything else in Contract M (identity, Noise XX, transport/envelope codec, link register /
-invoke / result, chat send + subscribe wait, VM fetch, token refresh, keychain storage,
-persistence, status/command events, and the connect/reconnect loop) **is** fully implemented
-from the SDK source and does not depend on the pairing transport, except that the connect loop
-needs a stored device token to run. `muse_pair` currently accepts and validates+stores the
-SDK token and records intent, but returns a clear error explaining that the device-token
-provisioning transport is pending the decision above.
+### 8a. GATT layout and advertising
+- Advertise the service UUID `7fdd3d1c-38ea-46cf-8b46-314ecf5f240c`, connectable
+  and discoverable, with the local name `MuseGadget-XXXXXX` (§1).
+- Two characteristics:
+  - **RX** `4d593029-28a2-4a6e-a1f0-3c2d5e8f9b01`, Write + WriteWithoutResponse:
+    the phone writes setup commands.
+  - **TX** `d75dc4ca-7b2b-4e9c-8f0a-1d2e3f4a5b6c`, Read + Notify: the device
+    notifies responses.
+- Windows uses WinRT: `GattServiceProvider` + `GattLocalCharacteristic`, started
+  with `StartAdvertisingWithParameters(IsConnectable=true, IsDiscoverable=true)`,
+  plus a `BluetoothLEAdvertisementPublisher` carrying the complete local name
+  (the service-provider advertisement cannot include a name). Requires an
+  adapter with `IsPeripheralRoleSupported = true`.
+
+### 8b. Packet framing (`ble_framing.py`)
+Each GATT packet over one notification/write is framed: `0xFE`, `chunk_index`
+(u8), `total_chunks` (u8), then a payload fragment. A packet not starting with
+`0xFE` is a complete, unchunked message. Usable payload per packet is
+`min(mtu-3, 160) - 3`; messages are capped at 8 KiB / 255 chunks. Reassembly is
+strictly in order; index 0 (or a changed total) starts a new message.
+
+### 8c. Handshake — community pairing v5 (`pairing.py`)
+`pairing_auth = "none"`, policy `confirm_app` (the app collects consent, no
+button). Curve P-256; AES-256-GCM records; HKDF-SHA256 key schedule.
+
+1. **app → device `pairing_client_hello`** (plaintext): `{ version:5,
+   pairing_auth:"none", pairing_policy:"confirm_app", mobile_pub, mobile_nonce }`.
+   `mobile_pub` is a 65-byte uncompressed P-256 point (`0x04 …`); `mobile_nonce`
+   is 16 bytes; both base64url, unpadded.
+2. **device → app `pairing_ready`** (plaintext): the device generates its own
+   P-256 keypair and a 16-byte nonce, builds the canonical **transcript** (the
+   exact field list in `build_transcript`), and returns `{ device_pub,
+   device_nonce, transcript_hash = SHA256(transcript), session_id, … }`.
+3. **Key schedule** (`derive_session_keys`): `ecdh = ECDH(device_priv,
+   mobile_pub)`; `salt = SHA256(mobile_nonce ++ device_nonce ++ transcript_hash)`;
+   `session_secret = HKDF(salt, ikm=ecdh, info="hatch-link ble setup v1", 32)`;
+   then `mobile→device = HKDF-Expand(session_secret, "mobile->device")` decrypts
+   app→device records, `device→mobile = HKDF-Expand(session_secret,
+   "device->mobile")` encrypts device→app records. `session_id =
+   SHA256("hatch-link session id v1" ++ transcript_hash ++ ecdh)[..16]`.
+4. **Records** (`pairing_encrypted`): `{ session_id, counter (decimal string),
+   ciphertext, tag }` base64url. Nonce = `dir ++ 0 0 0 ++ counter_be_u64`
+   (`dir` = 0 app→device, 1 device→app). AAD =
+   `"hatch-link ble setup v1|<session_id>|<m2d|d2m>|<counter>"`. Counters are
+   strictly sequential per direction from 0.
+5. **app → device** first encrypted record must be exactly
+   `{"action":"pairing_client_finished"}` at counter 0; the device confirms the
+   session (`confirm_app`) and replies with an encrypted
+   `{"type":"status","status":"pairing_confirmed","sdk_token":"mgst_…"}` (the SDK
+   token is attached only on this status, for Muse's attribution).
+
+A **known-answer test** pins steps 2–5 to the SDK's `community_app_v5` vector
+(`ble/tests.rs::handshake_produces_vector_session`): the device public key,
+nonce, transcript hash, session id, record keys and the decrypted
+`pairing_client_finished` all match byte for byte.
+
+### 8d. Provisioning (`provision_v2`)
+After confirmation the app sends an encrypted `provision_v2`:
+```json
+{ "action":"provision_v2", "ssid":"…", "password":"…",
+  "access_token":"…", "refresh_token":"…", "token_type":"device",
+  "username":"…", "api_url_v2":"https://…", "noise_host":"…" }
+```
+The device requires `token_type == "device"` and non-empty access/refresh
+tokens; the Wi-Fi fields are dropped (a desktop that can pair is already online).
+It answers with encrypted status updates — `wifi_connecting`, `wifi_connected`,
+then, after it **verifies the device token** by calling `GET /fetch_vms` with it,
+`auth_ok` (or `auth_failed`). Only on success does code-rs persist the
+`access_token`/`refresh_token` in the keychain (`code-rs.muse`) and the
+non-secret `api_url_v2` / `noise_host` / paired flag in `muse.json`, then stop
+advertising, emit `muse://status`, and start the connect loop. `error_storage`
+is returned if persistence fails. Sensitive actions sent in plaintext (before
+encryption) get `error_encryption_required`.
+
+The dispatcher is exercised end to end offline with a fake transport and a
+mobile-side record layer keyed from the vector
+(`ble/tests.rs::full_provision_flow_with_fake_transport`), asserting the full
+hello → ready → finished → confirmed → provision → `auth_ok` exchange and the
+committed credentials.
+
+### 8e. OS support
+Windows is implemented (WinRT, `ble/win.rs`). Linux (BlueZ over D-Bus, as the
+reference does) and macOS (CoreBluetooth) are not yet ported; `muse_pair`
+returns a clear "BLE pairing not supported on this OS yet" error there
+(`ble/stub.rs`). The Windows code targets the real `windows` crate and is
+compiled by the integrator on Windows (it cannot be built on the Linux worktree
+where it was written).
