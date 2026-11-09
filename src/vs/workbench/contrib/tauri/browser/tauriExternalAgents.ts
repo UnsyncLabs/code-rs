@@ -389,7 +389,7 @@ class ExternalAgentsProvider extends Disposable implements ILanguageModelChatPro
 		} catch { /* ACP unavailable */ }
 		// Muse through the user's own Muse account, with code-rs paired as a gadget
 		// (services/muse.rs). Muse via Meta's Model API is a regular provider (kind 'meta').
-		const vendorNames: Record<string, string> = { antigravity: 'Antigravity (Google)', kiro: 'Kiro (AWS)' };
+		const vendorNames: Record<string, string> = { antigravity: 'Antigravity (Google)', kiro: 'Kiro (AWS)', 'claude-code': 'Claude Code (Anthropic)' };
 		const entries = [{ id: 'muse', name: 'Muse (Meta, gadget)' }, ...acpAgents.map(a => ({ id: a.id, name: vendorNames[a.id] ?? a.label }))];
 		return entries.map(m => ({
 			identifier: `${EXTERNAL_AGENTS_VENDOR}:${m.id}`,

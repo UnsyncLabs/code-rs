@@ -65,6 +65,9 @@ struct AgentDef {
     label: &'static str,
     command: &'static str,
     args: &'static [&'static str],
+    /// Program whose presence on PATH means the agent is usable (defaults to `command`).
+    /// Claude Code runs through an npx adapter but only makes sense with `claude` installed.
+    requires: Option<&'static str>,
 }
 
 /// The agents code-rs knows how to launch. Generic by design: add a row here to
@@ -76,6 +79,7 @@ const AGENTS: &[AgentDef] = &[
         command: "agy",
         // code-rs has no telemetry; ask the agent not to send its own either.
         args: &["acp", "--disable-telemetry"],
+        requires: None,
     },
     AgentDef {
         id: "kiro",
@@ -83,6 +87,17 @@ const AGENTS: &[AgentDef] = &[
         // Kiro CLI (AWS); `kiro-cli acp` is its ACP server. Uses the user's Kiro login.
         command: "kiro-cli",
         args: &["acp"],
+        requires: None,
+    },
+    AgentDef {
+        id: "claude-code",
+        label: "Claude Code",
+        // Official ACP adapter for Claude Code (Agent Client Protocol org), installed by the
+        // user (`npm i -g @agentclientprotocol/claude-agent-acp`); nothing is downloaded at
+        // run time. It uses the user's existing Claude Code login.
+        command: "claude-agent-acp",
+        args: &[],
+        requires: Some("claude"),
     },
 ];
 
@@ -108,7 +123,7 @@ pub fn acp_agents() -> Vec<AcpAgentInfo> {
             label: a.label.to_string(),
             command: a.command.to_string(),
             args: a.args.iter().map(|s| s.to_string()).collect(),
-            available: resolve_command(a.command).is_some(),
+            available: resolve_command(a.requires.unwrap_or(a.command)).is_some() && resolve_command(a.command).is_some(),
         })
         .collect()
 }
