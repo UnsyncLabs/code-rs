@@ -16,9 +16,11 @@
 //! the OS keychain under the service name `code-rs.muse`; non-secret device
 //! state lives in `app_config_dir/muse.json`. Tokens are never logged.
 //!
-//! See the "Open question: pairing transport" section of the protocol doc:
-//! obtaining the first device token requires the Muse phone app over BLE, which
-//! is not implemented here; everything downstream of having a device token is.
+//! Pairing runs over BLE (`ble` submodule): code-rs advertises as a Muse gadget
+//! and the Muse phone app provisions it with a device token (`provision_v2`).
+//! Everything downstream of having a device token — VM fetch, token refresh, the
+//! Noise XX link session, chat send/subscribe — is implemented here and in the
+//! `link` submodule. See `docs/rust-rewrite/MUSE_PROTOCOL.md`.
 
 #![allow(dead_code)]
 
@@ -31,11 +33,13 @@ mod proto;
 mod noise;
 mod transport;
 mod link;
+mod ble;
 
 #[cfg(test)]
 mod tests;
 
 pub use link::{DeviceDescription, MuseCommand};
+use link::session::{InvokeEvent, SessionCommand};
 
 /// Keychain service name for all Muse secrets (Contract M pattern
 /// `code-rs.<feature>`).
@@ -355,6 +359,8 @@ struct MuseInner {
     commands: Vec<link::MuseCommand>,
     /// True while the background connect loop is running.
     running: bool,
+    /// Sender into the live session thread, present only while a session is up.
+    session_tx: Option<std::sync::mpsc::Sender<SessionCommand>>,
 }
 
 pub type SharedMuseState = Arc<MuseState>;
@@ -427,19 +433,8 @@ pub fn init_autoconnect<R: Runtime>(app: &AppHandle<R>) {
     let Some(state) = app.try_state::<SharedMuseState>() else {
         return;
     };
-    {
-        let mut inner = state.inner.lock().unwrap();
-        if inner.running {
-            return;
-        }
-        inner.running = true;
-        inner.error = None;
-    }
     let shared: SharedMuseState = (*state).clone();
-    let app2 = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        connect_loop(app2, shared);
-    });
+    start_connect_loop(app, &shared);
 }
 
 #[tauri::command]
@@ -447,12 +442,16 @@ pub fn muse_status<R: Runtime>(app: AppHandle<R>, state: tauri::State<'_, Shared
     current_status(&app, &state)
 }
 
-/// Validate and store the SDK token, then begin pairing.
+/// Validate and store the SDK token, then run the BLE pairing flow.
 ///
-/// See docs/rust-rewrite/MUSE_PROTOCOL.md "Open question: pairing transport":
-/// obtaining the first device token requires the Muse phone app over BLE, which
-/// is not implemented here. We store the token and identity and record intent,
-/// then return a clear, actionable error rather than silently appearing paired.
+/// Starts advertising as a Muse gadget (`MuseGadget-XXXXXX`) and waits for the
+/// Muse phone app to provision the device over BLE (`provision_v2`). On success
+/// the device access/refresh tokens are stored in the keychain, the non-secret
+/// device state (`api_url_v2`, `noise_host`, …) in `muse.json`, advertising is
+/// stopped, `muse://status` is emitted, and the connect loop is started.
+///
+/// BLE pairing currently requires Windows (WinRT GATT peripheral); other OSes
+/// return a clear "not supported yet" error (see MUSE_PROTOCOL.md).
 #[tauri::command]
 pub fn muse_pair<R: Runtime>(
     app: AppHandle<R>,
@@ -460,21 +459,85 @@ pub fn muse_pair<R: Runtime>(
     sdk_token: String,
 ) -> Result<(), String> {
     validate_sdk_token(&sdk_token)?;
-    set_secret(KEY_SDK_TOKEN, sdk_token.trim())?;
+    let sdk_token = sdk_token.trim().to_string();
+    set_secret(KEY_SDK_TOKEN, &sdk_token)?;
 
     let mut device = load_or_create_state(&app);
-    device.sdk_token_hint = Some(sdk_token_hint(Some(sdk_token.trim())));
+    device.sdk_token_hint = Some(sdk_token_hint(Some(&sdk_token)));
     save_state(&app, &device)?;
     emit_status(&app, &state);
 
-    // TODO(muse-pair): run the BLE `provision_v2` flow (or a non-BLE
-    // gadgets.muse.ai token exchange, if Muse offers one) to obtain the device
-    // access/refresh tokens, store them in the keychain, set device.paired =
-    // true and device.{api_url_v2,noise_host,access_token_saved_at,device_name}.
-    Err("muse_pair: the SDK token is saved, but obtaining the device token \
-         requires the Muse phone app's BLE pairing flow, which is not yet \
-         implemented on the desktop. See docs/rust-rewrite/MUSE_PROTOCOL.md."
-        .into())
+    // The BLE setup window blocks for up to a few minutes. Tauri runs command
+    // handlers on a worker thread (not the UI thread), so blocking here is
+    // fine; the UI shows its own "pairing…" state and listens for muse://status.
+    run_ble_pairing(&app, &state, &device.mac, &sdk_token)?;
+
+    // Start the live link now that we have a device token.
+    start_connect_loop(&app, &state);
+    Ok(())
+}
+
+/// Drive one BLE setup window and persist what the app provisions.
+fn run_ble_pairing<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &SharedMuseState,
+    mac: &str,
+    sdk_token: &str,
+) -> Result<(), String> {
+    let params = ble::SetupParams {
+        local_name: ble::ble_name(mac),
+        node_id: identity::node_id(mac),
+        device_id: identity::device_id(mac),
+        mac: mac.to_string(),
+        firmware_version: env!("CARGO_PKG_VERSION").to_string(),
+        sdk_token: Some(sdk_token.to_string()),
+        timeout_secs: ble::SETUP_WINDOW_SECS,
+    };
+
+    // The commit callback verifies the device token against the Muse API and,
+    // only if it works, persists the secrets and device state. Runs inside the
+    // BLE setup worker, before the app is told `auth_ok`.
+    let app_for_commit = app.clone();
+    let sdk_hint = sdk_token_hint(Some(sdk_token));
+    let commit = move |creds: &ble::pairing::Credentials| -> Result<(), String> {
+        let root = api_root(if creds.api_url_v2.is_empty() {
+            None
+        } else {
+            Some(creds.api_url_v2.as_str())
+        });
+        let (vms, status) = fetch_vms(&creds.access_token, &root);
+        if vms.is_empty() {
+            log::warn!("muse: provisioned token check failed (HTTP {status:?})");
+            return Err("auth_failed".into());
+        }
+        // Persist secrets in the keychain and non-secret state in muse.json.
+        set_secret(KEY_ACCESS_TOKEN, &creds.access_token).map_err(|_| "error_storage".to_string())?;
+        set_secret(KEY_REFRESH_TOKEN, &creds.refresh_token).map_err(|_| "error_storage".to_string())?;
+        let mut device = load_or_create_state(&app_for_commit);
+        device.paired = true;
+        device.sdk_token_hint = Some(sdk_hint.clone());
+        device.api_url_v2 = if creds.api_url_v2.is_empty() { None } else { Some(creds.api_url_v2.clone()) };
+        device.noise_host = if creds.noise_host.is_empty() { None } else { Some(creds.noise_host.clone()) };
+        device.access_token_saved_at = now_secs();
+        if !creds.username.is_empty() {
+            device.device_name = Some(creds.username.clone());
+        }
+        save_state(&app_for_commit, &device).map_err(|_| "error_storage".to_string())?;
+        Ok(())
+    };
+
+    let pair_result = ble::run_setup_window(params, commit);
+    match pair_result {
+        Ok(_creds) => {
+            set_error(app, state, None);
+            emit_status(app, state);
+            Ok(())
+        }
+        Err(e) => {
+            set_error(app, state, Some(e.clone()));
+            Err(e)
+        }
+    }
 }
 
 /// Forget the device: delete the pairing state and all keychain secrets.
@@ -493,6 +556,9 @@ pub fn muse_unpair<R: Runtime>(app: AppHandle<R>, state: tauri::State<'_, Shared
     }
     {
         let mut inner = state.inner.lock().unwrap();
+        if let Some(tx) = inner.session_tx.take() {
+            let _ = tx.send(SessionCommand::Stop);
+        }
         inner.connected = false;
         inner.running = false;
         inner.error = None;
@@ -509,20 +575,25 @@ pub fn muse_connect<R: Runtime>(app: AppHandle<R>, state: tauri::State<'_, Share
     if device.as_ref().map(|d| !d.paired).unwrap_or(true) {
         return Err("not paired; run muse_pair first".into());
     }
+    start_connect_loop(&app, &state);
+    Ok(())
+}
+
+/// Spawn the background connect/reconnect loop if it is not already running.
+fn start_connect_loop<R: Runtime>(app: &AppHandle<R>, state: &SharedMuseState) {
     {
         let mut inner = state.inner.lock().unwrap();
         if inner.running {
-            return Ok(()); // idempotent
+            return; // idempotent
         }
         inner.running = true;
         inner.error = None;
     }
-    let shared: SharedMuseState = (*state).clone();
+    let shared: SharedMuseState = state.clone();
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         connect_loop(app2, shared);
     });
-    Ok(())
 }
 
 /// Replace the set of commands exposed to the Muse agent.
@@ -531,10 +602,16 @@ pub fn muse_set_commands(
     state: tauri::State<'_, SharedMuseState>,
     commands: Vec<link::MuseCommand>,
 ) -> Result<(), String> {
-    let mut inner = state.inner.lock().unwrap();
-    inner.commands = commands;
-    // TODO(muse-net): if a session is live, re-send link.register with the new
-    // commands_v2 so Muse picks up the change without a reconnect.
+    let tx = {
+        let mut inner = state.inner.lock().unwrap();
+        inner.commands = commands.clone();
+        inner.session_tx.clone()
+    };
+    // If a session is live, re-register with the new commands_v2 so Muse picks
+    // up the change without a reconnect.
+    if let Some(tx) = tx {
+        let _ = tx.send(SessionCommand::SetCommands(commands));
+    }
     Ok(())
 }
 
@@ -542,32 +619,47 @@ pub fn muse_set_commands(
 #[tauri::command]
 pub fn muse_send<R: Runtime>(
     _app: AppHandle<R>,
-    _state: tauri::State<'_, SharedMuseState>,
-    _text: String,
-    _session_id: Option<String>,
-    _timeout_secs: Option<u64>,
+    state: tauri::State<'_, SharedMuseState>,
+    text: String,
+    session_id: Option<String>,
+    timeout_secs: Option<u64>,
 ) -> Result<MuseReply, String> {
-    // TODO(muse-net): with a live session, open POST /chat/subscribe, send the
-    // message via POST /chat/stream, drive a session::ReplyTracker to the answer
-    // within the timeout, and return { text, sessionId }. Blocked on the pairing
-    // transport providing a device token (see muse_pair).
-    Err("muse_send: not connected (device-token pairing is not yet implemented; \
-         see docs/rust-rewrite/MUSE_PROTOCOL.md)."
-        .into())
+    let tx = {
+        let inner = state.inner.lock().unwrap();
+        inner.session_tx.clone()
+    };
+    let Some(tx) = tx else {
+        return Err("muse_send: not connected to a Muse VM".into());
+    };
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(600).clamp(1, 600));
+    tx.send(SessionCommand::Send { text, session_id, timeout, reply: reply_tx })
+        .map_err(|_| "muse_send: the session is no longer running".to_string())?;
+    // Wait a little beyond the session's own deadline for the answer.
+    match reply_rx.recv_timeout(timeout + std::time::Duration::from_secs(5)) {
+        Ok(result) => result,
+        Err(_) => Err("muse_send: timed out waiting for the Muse reply".into()),
+    }
 }
 
 /// Answer a relayed `link.invoke` with a `link.result` message.
 #[tauri::command]
 pub fn muse_command_result<R: Runtime>(
     _app: AppHandle<R>,
-    _state: tauri::State<'_, SharedMuseState>,
-    _call_id: String,
-    _ok: bool,
-    _result: Value,
+    state: tauri::State<'_, SharedMuseState>,
+    call_id: String,
+    ok: bool,
+    result: Value,
 ) -> Result<(), String> {
-    // TODO(muse-net): route the result to the live session's control stream as
-    // link.result (see link::result_message). Blocked on the session runner.
-    Err("muse_command_result: no live session".into())
+    let tx = {
+        let inner = state.inner.lock().unwrap();
+        inner.session_tx.clone()
+    };
+    let Some(tx) = tx else {
+        return Err("muse_command_result: no live session".into());
+    };
+    tx.send(SessionCommand::CommandResult { call_id, ok, result })
+        .map_err(|_| "muse_command_result: the session is no longer running".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -575,11 +667,9 @@ pub fn muse_command_result<R: Runtime>(
 // ---------------------------------------------------------------------------
 
 /// The reconnect loop: refresh the device token when due, fetch VMs, open a
-/// session and serve until it ends, with exponential backoff.
-///
-/// The actual WebSocket session (session::run_session) is not yet wired in
-/// (blocked on the pairing transport); this function implements the token /
-/// VM-fetch scaffolding and keeps the published status accurate.
+/// link session (`link::session::run_session`) and serve until it ends, with
+/// exponential backoff (base 2 s, max 60 s; auth failures floor at 15 s; the
+/// backoff resets after a healthy session).
 fn connect_loop<R: Runtime>(app: AppHandle<R>, state: SharedMuseState) {
     let mut backoff_secs = 2.0f64;
     loop {
@@ -646,20 +736,82 @@ fn connect_loop<R: Runtime>(app: AppHandle<R>, state: SharedMuseState) {
             let _ = save_state(&app, &device);
         }
 
-        let _cfg = link::session::SessionConfig {
+        let cfg = link::session::SessionConfig {
             noise_host: device.noise_host.clone().unwrap_or_else(|| DEFAULT_NOISE_HOST.into()),
             vm_id: if vm.vm_id.is_empty() { vm.vm_name.clone() } else { vm.vm_id.clone() },
             vm_auth_token: vm.vm_auth_token.clone(),
         };
 
-        // TODO(muse-net): let outcome = session::run_session(&app, &state, _cfg, ...);
-        // For now, without the WebSocket runner we cannot hold a live session.
-        set_error(
-            &app,
-            &state,
-            Some("session runner not yet implemented (see MUSE_PROTOCOL.md)".into()),
-        );
-        break;
+        // Build the device description from the current command set.
+        let commands = state.inner.lock().unwrap().commands.clone();
+        let device_desc = DeviceDescription {
+            node_id: identity::node_id(&device.mac),
+            display_name: "code-rs".into(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            commands,
+        };
+
+        // Channel the service uses to talk to this session.
+        let (tx, rx) = std::sync::mpsc::channel::<SessionCommand>();
+        {
+            let mut inner = state.inner.lock().unwrap();
+            inner.session_tx = Some(tx);
+            inner.connected = true;
+            inner.error = None;
+        }
+        emit_status(&app, &state);
+        let started = std::time::Instant::now();
+
+        // Relay link.invoke to the workbench as muse://command.
+        let app_for_invoke = app.clone();
+        let on_invoke = std::sync::Arc::new(move |ev: InvokeEvent| {
+            let _ = app_for_invoke.emit(
+                COMMAND_EVENT,
+                json!({ "callId": ev.call_id, "name": ev.name, "args": ev.args }),
+            );
+        });
+        let app_for_reg = app.clone();
+        let shared_for_reg = state.clone();
+        let on_registered = std::sync::Arc::new(move || {
+            // Registration confirmed: surface connected = true (already set).
+            emit_status(&app_for_reg, &shared_for_reg);
+        });
+
+        let outcome = link::session::run_session(cfg, device_desc, rx, on_invoke, on_registered);
+
+        // Session ended: drop the channel and reflect state.
+        {
+            let mut inner = state.inner.lock().unwrap();
+            inner.session_tx = None;
+            inner.connected = false;
+        }
+        emit_status(&app, &state);
+
+        match outcome {
+            link::session::Outcome::Stopped => break,
+            link::session::Outcome::Unpaired => {
+                device.paired = false;
+                let _ = save_state(&app, &device);
+                set_error(&app, &state, Some("the Muse removed this device; pair again".into()));
+                break;
+            }
+            link::session::Outcome::Forbidden => {
+                set_error(&app, &state, Some("the Muse VM refused this device".into()));
+                sleep_backoff(&mut backoff_secs, 15.0);
+            }
+            link::session::Outcome::AuthRejected => {
+                device.access_token_saved_at = 0; // force refresh next loop
+                let _ = save_state(&app, &device);
+                sleep_backoff(&mut backoff_secs, 15.0);
+            }
+            link::session::Outcome::Closed => {
+                // Reset backoff after a healthy (>= 30s) session.
+                if started.elapsed() >= std::time::Duration::from_secs(30) {
+                    backoff_secs = 2.0;
+                }
+                sleep_backoff(&mut backoff_secs, 2.0);
+            }
+        }
     }
     {
         let mut inner = state.inner.lock().unwrap();
