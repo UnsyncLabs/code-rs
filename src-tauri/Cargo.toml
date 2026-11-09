@@ -26,6 +26,15 @@ dirs = "6"
 sha2 = "0.10"
 keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
 ureq = "3"
+# --- muse gadget service (services/muse.rs) ---
+# Noise_XX_25519_AESGCM_SHA256 is hand-rolled on these RustCrypto primitives
+# because the SDK uses a big-endian AEAD nonce, which `snow` is not wire-
+# compatible with. x25519-dalek for the DH, aes-gcm for the AEAD, hmac (+ the
+# existing sha2) for HKDF. No new async/websocket crate yet: the live session
+# runner is gated on the pairing transport (see docs/rust-rewrite/MUSE_PROTOCOL.md).
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+aes-gcm = "0.10"
+hmac = "0.12"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
