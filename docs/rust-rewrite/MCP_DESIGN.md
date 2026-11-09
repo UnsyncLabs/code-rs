@@ -228,6 +228,27 @@ Para que Claude Code, Kiro u otros lo usen como "segunda opinión" o como reviso
 Las revisiones son de solo lectura; aplicar arreglos sigue pasando por `edit_propose`
 (nivel 2, con confirmación).
 
+## 7b. Guardián de comandos (opcional, fase 5)
+
+Antes de ejecutar un comando (por `terminal_run` o en cualquier terminal de una IA externa),
+se evalúa si es destructivo, irreversible o raro, para que la IA "se pare a pensar" si vale la
+pena y para que el usuario confirme lo peligroso.
+
+| Capa | Qué es | Recursos | Activación |
+|---|---|---|---|
+| 1. Reglas (Rust) | Análisis del comando como la shell (tuberías, `&&`, `sudo`, PowerShell, cmd) y patrones de riesgo: `rm -rf`, `del /s`, `Remove-Item -Recurse`, `git reset --hard`, `git push --force`, `dd`, `mkfs`, `format`, `curl \| sh`, `chmod -R 777`, borrar entornos (`.venv`, `node_modules`), SQL `DROP`/`TRUNCATE`… | ~0 (microsegundos) | Siempre |
+| 2. Micro-clasificador | Modelo diminuto entrenado solo para clasificar comandos (seguro / destructivo / irreversible / descarga-y-ejecuta / fuera del proyecto), en **CPU** vía ONNX desde Rust | ~5–30 MB RAM, **0 VRAM**, milisegundos | Opcional |
+| 3. LLM guardián | Un modelo tipo Llama Guard o cualquier proveedor del asistente (sección 7), local o en la nube, que valora el comando en contexto ("¿tiene sentido para lo que pidió el usuario?") | 1–3 GB si es local; nada extra si es en la nube | Opcional, reutiliza la configuración del asistente |
+
+- Herramienta MCP **`command_assess`** (nivel 0): devuelve riesgo, motivo e impacto ("borra
+  `.venv` (1,2 GB); se regenera con `pip install -r requirements.txt`"). Pensada para que la
+  IA consulte **antes** de ejecutar, también en su propia terminal fuera de code-rs.
+- `terminal_run` usa el guardián automáticamente: riesgo alto = confirmación obligatoria aunque
+  el usuario haya permitido la terminal para la sesión.
+- Entrenamiento de la capa 2: conjunto de comandos etiquetados (reglas, ejemplos reales y
+  variantes generadas); modelo pequeño, reentrenable en minutos, versionado con code-rs.
+- Si la capa 2 resultara costosa en algún equipo, se desactiva sin perder la capa 1.
+
 ## 8. Comunicación con la IA de cada ventana
 
 - **Del usuario a la IA:** comando "Pedir a la IA…" en la ventana, que envía un mensaje al
@@ -254,7 +275,7 @@ Las revisiones son de solo lectura; aplicar arreglos sigue pasando por `edit_pro
 | **2** | Cuarentena e informe de seguridad (`extensions_audit`), aplicado también a instalaciones manuales; diálogo de confirmación con informe |
 | **3** | Asistente integrado: proveedores (Anthropic, OpenAI, OpenRouter, compatibles con OpenAI y locales), claves en el llavero del sistema, revisión de extensiones y updates, herramientas `assistant_*` por MCP |
 | **4** | Herramientas de nivel 2 y 3 con confirmación (`edit_propose`, instalar, desinstalar, `command_run`); revisión por clientes MCP (`extensions_review_submit`) |
-| **5** | `terminal_run` (siempre con confirmación y lista de comandos bloqueados), suscripciones a eventos, comunicación usuario↔IA, skill y prompts |
+| **5** | Guardián de comandos (sección 7b) y `command_assess`; `terminal_run` (siempre con confirmación y evaluado por el guardián), suscripciones a eventos, comunicación usuario↔IA, skill y prompts |
 
 ## 11. Decisiones tomadas
 
