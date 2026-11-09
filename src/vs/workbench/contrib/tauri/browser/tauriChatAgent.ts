@@ -21,6 +21,7 @@ import { IChatProgress } from '../../chat/common/chatService/chatService.js';
 import { ChatAgentLocation, ChatModeKind } from '../../chat/common/constants.js';
 import { EFFORT_KEY, providerIdFromModel } from './tauriChatModels.js';
 import { IAgentToolHost, IAgentToolHostService } from './tauriAgentTools.js';
+import { getExternalAgentRouter } from './tauriExternalAgents.js';
 import { CODE_REVIEWER_SETTING, listProviders } from './tauriAssistant.js';
 
 export const CHAT_PROVIDER_SETTING = 'codeRs.assistant.chat.provider';
@@ -138,6 +139,9 @@ export class TauriChatAgentContribution extends Disposable implements IWorkbench
 	}
 
 	private async invoke(request: IChatAgentRequest, progress: (parts: IChatProgress[]) => void, history: IChatAgentHistoryEntry[], token: CancellationToken): Promise<IChatAgentResult> {
+		if (request.userSelectedModelId?.startsWith('code-rs-agents:')) {
+			return getExternalAgentRouter().invoke(request, progress, history, token);
+		}
 		// The model picker lists our providers (tauriChatModels.ts); its choice wins.
 		const providerId = providerIdFromModel(request.userSelectedModelId) ?? await this.resolveProvider();
 		const effort = typeof request.modelConfiguration?.[EFFORT_KEY] === 'string' ? request.modelConfiguration[EFFORT_KEY] as string : undefined;

@@ -25,6 +25,7 @@ import { TauriExtensionAuditContribution } from './tauriExtensionAudit.js';
 import { TauriWindowControlsContribution } from './tauriWindowControls.js';
 import './tauriAssistant.js';
 import { TauriChatModelsContribution } from './tauriChatModels.js';
+import { TauriExternalAgentsContribution } from './tauriExternalAgents.js';
 
 /**
  * Wires the native Rust/Tauri services into the web workbench when it is hosted
@@ -86,3 +87,4 @@ registerWorkbenchContribution2(TauriExtensionAuditContribution.ID, TauriExtensio
 registerWorkbenchContribution2(TauriWindowControlsContribution.ID, TauriWindowControlsContribution, WorkbenchPhase.BlockRestore);
 registerWorkbenchContribution2(TauriChatAgentContribution.ID, TauriChatAgentContribution, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(TauriChatModelsContribution.ID, TauriChatModelsContribution, WorkbenchPhase.AfterRestored);
+registerWorkbenchContribution2(TauriExternalAgentsContribution.ID, TauriExternalAgentsContribution, WorkbenchPhase.AfterRestored);
