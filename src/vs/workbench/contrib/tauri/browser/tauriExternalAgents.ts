@@ -45,7 +45,7 @@ interface ITauriEventGlobal {
 interface IMuseStatus { paired: boolean; connected: boolean; deviceName?: string; error?: string }
 interface IMuseReply { text: string; sessionId?: string }
 interface IMuseCommandEvent { callId: string; name: string; args: Record<string, unknown> }
-interface IAcpAgentInfo { id: string; label: string; available: boolean }
+interface IAcpAgentInfo { id: string; label: string; command: string; available: boolean }
 
 interface IAcpOption { optionId: string; name: string; kind: string }
 interface IAcpToolCall { toolCallId?: string; title?: string; kind?: string; status?: string }
@@ -66,6 +66,8 @@ const errorMessage = (e: unknown) => e instanceof Error ? e.message : String(e);
 
 interface IAcpSession {
 	acpId: string;
+	/** Agent name shown in approvals (e.g. "Kiro", "Antigravity"). */
+	label: string;
 	/** Set while a turn is running. */
 	progress?: (parts: IChatProgress[]) => void;
 }
@@ -92,8 +94,8 @@ export class ExternalAgentRouter extends Disposable {
 			const model = request.userSelectedModelId?.slice(EXTERNAL_AGENTS_VENDOR.length + 1);
 			if (model === 'muse') {
 				await this.invokeMuse(request, progress);
-			} else if (model === 'antigravity') {
-				await this.invokeAntigravity(request, progress, token);
+			} else if (model) {
+				await this.invokeAcp(model, request, progress, token);
 			} else {
 				progress([{ kind: 'warning', content: new MarkdownString(localize('codeRsAgentsUnknown', "Unknown external agent.")) }]);
 			}
@@ -168,19 +170,21 @@ export class ExternalAgentRouter extends Disposable {
 		return this.acpListening;
 	}
 
-	private async invokeAntigravity(request: IChatAgentRequest, progress: (parts: IChatProgress[]) => void, token: CancellationToken): Promise<void> {
-		const agents = await tauriInvoke<IAcpAgentInfo[]>('acp_agents');
-		if (!agents.find(a => a.id === 'antigravity')?.available) {
-			progress([{ kind: 'warning', content: new MarkdownString(localize('codeRsAntigravityMissing', "The Antigravity CLI (`agy`) was not found on PATH.")) }]);
+	/** Any ACP agent known to the Rust side (services/acp.rs: Antigravity, Kiro, ...). */
+	private async invokeAcp(agentId: string, request: IChatAgentRequest, progress: (parts: IChatProgress[]) => void, token: CancellationToken): Promise<void> {
+		const agent = (await tauriInvoke<IAcpAgentInfo[]>('acp_agents')).find(a => a.id === agentId);
+		if (!agent?.available) {
+			progress([{ kind: 'warning', content: new MarkdownString(localize('codeRsAcpMissing', "{0} was not found: `{1}` is not on PATH.", agent?.label ?? agentId, agent?.command ?? agentId)) }]);
 			return;
 		}
 		await this.ensureAcpListeners();
-		const key = request.sessionResource.toString();
+		// One ACP session per chat session and agent (the user may switch agents mid-chat).
+		const key = `${agentId}|${request.sessionResource.toString()}`;
 		let session = this.acpSessions.get(key);
 		if (!session) {
 			const cwd = this.contextService.getWorkspace().folders[0]?.uri.fsPath;
-			const acpId = await tauriInvoke<string>('acp_start', { agentId: 'antigravity', cwd });
-			session = { acpId };
+			const acpId = await tauriInvoke<string>('acp_start', { agentId, cwd });
+			session = { acpId, label: agent.label };
 			this.acpSessions.set(key, session);
 			this.acpById.set(acpId, session);
 		}
@@ -221,21 +225,23 @@ export class ExternalAgentRouter extends Disposable {
 
 	private async onAcpPermission(e: IAcpPermissionEvent): Promise<void> {
 		const tool = e.toolCall?.title ?? e.toolCall?.kind ?? 'tool';
+		const label = this.acpById.get(e.sessionId)?.label ?? 'ACP agent';
 		let optionId: string | undefined;
 		try {
 			const choice = await this.approvals.request({
-				client: 'Antigravity', tool, level: 3,
-				title: localize('codeRsAcpPermTitle', "Antigravity wants to use: {0}", tool),
+				client: label, tool, level: 3,
+				title: localize('codeRsAcpPermTitle', "{0} wants to use: {1}", label, tool),
 				detail: new MarkdownString(e.toolCall?.kind ? '`' + e.toolCall.kind + '`' : ''),
 			});
 			const kinds = choice === 'session' ? ['allow_always', 'allow_once'] : choice === 'once' ? ['allow_once', 'allow_always'] : ['reject_once', 'reject_always'];
 			optionId = kinds.map(k => e.options.find(o => o.kind === k)).find(o => !!o)?.optionId;
 		} catch { /* treated as cancelled */ }
-		await tauriInvoke('acp_permission_result', { requestId: e.requestId, optionId, cancelled: !optionId }).catch(() => { });
+		await tauriInvoke('acp_permission_result', { sessionId: e.sessionId, requestId: e.requestId, optionId, cancelled: !optionId }).catch(err => console.error('[code-rs] acp_permission_result failed', err));
 	}
 
 	private async onAcpFs(e: IAcpFsEvent): Promise<void> {
-		const answer = async (r: { ok: boolean; content?: string; error?: string }): Promise<void> => { await tauriInvoke('acp_fs_result', { requestId: e.requestId, ...r }).catch(() => { }); };
+		const answer = async (r: { ok: boolean; content?: string; error?: string }): Promise<void> => { await tauriInvoke('acp_fs_result', { sessionId: e.sessionId, requestId: e.requestId, ...r }).catch(err => console.error('[code-rs] acp_fs_result failed', err)); };
+		const label = this.acpById.get(e.sessionId)?.label ?? 'ACP agent';
 		try {
 			const uri = URI.file(e.path);
 			const folders = this.contextService.getWorkspace().folders;
@@ -253,8 +259,8 @@ export class ExternalAgentRouter extends Disposable {
 				return answer({ ok: true, content });
 			}
 			const choice = await this.approvals.request({
-				client: 'Antigravity', tool: 'fs/write_text_file', level: 2,
-				title: localize('codeRsAcpWriteTitle', "Antigravity wants to write a file"),
+				client: label, tool: 'fs/write_text_file', level: 2,
+				title: localize('codeRsAcpWriteTitle', "{0} wants to write a file", label),
 				detail: new MarkdownString('`' + e.path + '`'),
 			});
 			if (choice === 'deny') {
@@ -294,13 +300,14 @@ class ExternalAgentsProvider extends Disposable implements ILanguageModelChatPro
 	}
 
 	async provideLanguageModelChatInfo(): Promise<ILanguageModelChatMetadataAndIdentifier[]> {
-		let antigravity = false;
+		let acpAgents: IAcpAgentInfo[] = [];
 		try {
-			antigravity = !!(await tauriInvoke<IAcpAgentInfo[]>('acp_agents')).find(a => a.id === 'antigravity')?.available;
+			acpAgents = (await tauriInvoke<IAcpAgentInfo[]>('acp_agents')).filter(a => a.available);
 		} catch { /* ACP unavailable */ }
 		// Muse through the user's own Muse account, with code-rs paired as a gadget
 		// (services/muse.rs). Muse via Meta's Model API is a regular provider (kind 'meta').
-		const entries = [{ id: 'muse', name: 'Muse (Meta, gadget)' }, ...(antigravity ? [{ id: 'antigravity', name: 'Antigravity (Google)' }] : [])];
+		const vendorNames: Record<string, string> = { antigravity: 'Antigravity (Google)', kiro: 'Kiro (AWS)' };
+		const entries = [{ id: 'muse', name: 'Muse (Meta, gadget)' }, ...acpAgents.map(a => ({ id: a.id, name: vendorNames[a.id] ?? a.label }))];
 		return entries.map(m => ({
 			identifier: `${EXTERNAL_AGENTS_VENDOR}:${m.id}`,
 			metadata: {

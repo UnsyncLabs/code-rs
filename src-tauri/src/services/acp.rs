@@ -69,13 +69,22 @@ struct AgentDef {
 
 /// The agents code-rs knows how to launch. Generic by design: add a row here to
 /// support another ACP agent.
-const AGENTS: &[AgentDef] = &[AgentDef {
-    id: "antigravity",
-    label: "Antigravity",
-    command: "agy",
-    // code-rs has no telemetry; ask the agent not to send its own either.
-    args: &["acp", "--disable-telemetry"],
-}];
+const AGENTS: &[AgentDef] = &[
+    AgentDef {
+        id: "antigravity",
+        label: "Antigravity",
+        command: "agy",
+        // code-rs has no telemetry; ask the agent not to send its own either.
+        args: &["acp", "--disable-telemetry"],
+    },
+    AgentDef {
+        id: "kiro",
+        label: "Kiro",
+        // Kiro CLI (AWS); `kiro-cli acp` is its ACP server. Uses the user's Kiro login.
+        command: "kiro-cli",
+        args: &["acp"],
+    },
+];
 
 /// One entry of the `acp_agents` reply: a known agent plus whether its command
 /// was found on `PATH`.
@@ -127,6 +136,8 @@ struct Session {
     /// value is the JSON-RPC id to answer on the child's stdin.
     inbound: Mutex<HashMap<u64, InboundRequest>>,
     next_rpc_id: AtomicU64,
+    /// Working folder of the session: reads inside it are served directly by Rust.
+    cwd: std::path::PathBuf,
 }
 
 /// An agent->client request we surfaced to the workbench and are waiting to
@@ -275,6 +286,7 @@ pub async fn acp_start<R: Runtime>(
         pending: Mutex::new(HashMap::new()),
         inbound: Mutex::new(HashMap::new()),
         next_rpc_id: AtomicU64::new(1),
+        cwd: std::path::PathBuf::from(&cwd),
     });
 
     // The session needs a key before we know the agent's sessionId (the reader
@@ -797,12 +809,36 @@ fn handle_agent_notification<R: Runtime>(app: &AppHandle<R>, session_id: &str, m
             // Unknown notification: surface it on the update channel so nothing
             // is silently dropped, tagged with the method.
             log::debug!("acp {session_id}: notification '{other}'");
+            eprintln!("[acp] {session_id}: notification '{other}'");
             let _ = app.emit(
                 EVENT_UPDATE,
                 json!({ "sessionId": session_id, "update": { "sessionUpdate": other, "params": params } }),
             );
         }
     }
+}
+
+/// `fs/read_text_file` served by Rust: the path must be inside `folder`; `line` is 1-based.
+fn read_in_folder(folder: &std::path::Path, params: &Value) -> Result<String, String> {
+    let path = params.get("path").and_then(Value::as_str).ok_or("missing path")?;
+    let full = std::fs::canonicalize(path).map_err(|e| format!("{path}: {e}"))?;
+    let root = std::fs::canonicalize(folder).map_err(|e| e.to_string())?;
+    if !full.starts_with(&root) {
+        return Err(format!("Access denied: {path} is outside the workspace folder"));
+    }
+    let text = std::fs::read_to_string(&full).map_err(|e| format!("{path}: {e}"))?;
+    let line = params.get("line").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
+    let limit = params.get("limit").and_then(Value::as_u64).map(|l| l as usize);
+    if line == 1 && limit.is_none() {
+        return Ok(text);
+    }
+    let lines = text.lines().skip(line - 1);
+    Ok(match limit {
+        Some(n) => lines.take(n).collect::<Vec<_>>().join("
+"),
+        None => lines.collect::<Vec<_>>().join("
+"),
+    })
 }
 
 /// Turn an agent->client request into a Tauri event, recording the JSON-RPC id
@@ -812,6 +848,7 @@ async fn handle_agent_request<R: Runtime>(app: &AppHandle<R>, session_id: &str, 
     let rpc_id = message.get("id").cloned().unwrap_or(Value::Null);
     let params = message.get("params").cloned().unwrap_or(Value::Null);
 
+    eprintln!("[acp] {session_id}: agent request '{method}'");
     let Some(state) = app.try_state::<AcpState>() else {
         return;
     };
@@ -820,7 +857,7 @@ async fn handle_agent_request<R: Runtime>(app: &AppHandle<R>, session_id: &str, 
         sessions.get(session_id).cloned()
     };
     let Some(session) = session else {
-        // No session: reply with an error so the agent is not left hanging.
+        eprintln!("[acp] {session_id}: no session for agent request '{method}'");
         return;
     };
 
@@ -836,6 +873,16 @@ async fn handle_agent_request<R: Runtime>(app: &AppHandle<R>, session_id: &str, 
             (InboundKind::Permission, EVENT_PERMISSION, (request_id, payload))
         }
         "fs/read_text_file" => {
+            // Reads need no approval: answer them here, without a round trip through the
+            // workbench, so the agent never waits on the UI (only inside the session folder).
+            let reply = match read_in_folder(&session.cwd, &params) {
+                Ok(content) => json!({ "jsonrpc": "2.0", "id": rpc_id, "result": { "content": content } }),
+                Err(e) => json!({ "jsonrpc": "2.0", "id": rpc_id, "error": { "code": -32000, "message": e } }),
+            };
+            let _ = notify(&session, reply);
+            return;
+        }
+        "fs/read_text_file_via_workbench" => {
             let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::SeqCst);
             let payload = json!({
                 "sessionId": session_id,
@@ -915,6 +962,33 @@ pub fn on_exit<R: Runtime>(app: &AppHandle<R>) {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod read_tests {
+    use super::*;
+
+    #[test]
+    fn reads_inside_the_folder_only() {
+        let dir = std::env::temp_dir().join(format!("acp-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.txt");
+        std::fs::write(&f, "one
+two
+three
+").unwrap();
+        let p = |v: Value| read_in_folder(&dir, &v);
+        assert_eq!(p(json!({ "path": f.to_str().unwrap() })).unwrap(), "one
+two
+three
+");
+        assert_eq!(p(json!({ "path": f.to_str().unwrap(), "line": 2, "limit": 1 })).unwrap(), "two");
+        let outside = std::env::temp_dir().join(format!("acp-out-{}.txt", std::process::id()));
+        std::fs::write(&outside, "x").unwrap();
+        assert!(p(json!({ "path": outside.to_str().unwrap() })).is_err());
+        let _ = std::fs::remove_file(outside);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -924,7 +998,7 @@ mod tests {
             control: tx,
             pending: Mutex::new(HashMap::new()),
             inbound: Mutex::new(HashMap::new()),
-            next_rpc_id: AtomicU64::new(1),
+            next_rpc_id: AtomicU64::new(1), cwd: std::env::temp_dir(),
         })
     }
 
@@ -964,7 +1038,7 @@ mod tests {
             control: tx,
             pending: Mutex::new(HashMap::new()),
             inbound: Mutex::new(HashMap::new()),
-            next_rpc_id: AtomicU64::new(1),
+            next_rpc_id: AtomicU64::new(1), cwd: std::env::temp_dir(),
         });
 
         let s = session.clone();
@@ -1018,7 +1092,7 @@ mod tests {
             control: tx,
             pending: Mutex::new(HashMap::new()),
             inbound: Mutex::new(HashMap::new()),
-            next_rpc_id: AtomicU64::new(1),
+            next_rpc_id: AtomicU64::new(1), cwd: std::env::temp_dir(),
         });
         // Register an inbound permission request with JSON-RPC id 9.
         session.inbound.lock().await.insert(
@@ -1050,7 +1124,7 @@ mod tests {
             control: tx,
             pending: Mutex::new(HashMap::new()),
             inbound: Mutex::new(HashMap::new()),
-            next_rpc_id: AtomicU64::new(1),
+            next_rpc_id: AtomicU64::new(1), cwd: std::env::temp_dir(),
         });
         session.inbound.lock().await.insert(
             3,

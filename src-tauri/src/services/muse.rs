@@ -453,11 +453,20 @@ pub fn muse_status<R: Runtime>(app: AppHandle<R>, state: tauri::State<'_, Shared
 /// BLE pairing currently requires Windows (WinRT GATT peripheral); other OSes
 /// return a clear "not supported yet" error (see MUSE_PROTOCOL.md).
 #[tauri::command]
-pub fn muse_pair<R: Runtime>(
+pub async fn muse_pair<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, SharedMuseState>,
     sdk_token: String,
 ) -> Result<(), String> {
+    // Sync commands run on the main thread in Tauri 2: the BLE wait (minutes) would freeze
+    // the window. Run the whole flow on a blocking worker instead.
+    let state: SharedMuseState = (*state).clone();
+    tauri::async_runtime::spawn_blocking(move || muse_pair_blocking(app, state, sdk_token))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn muse_pair_blocking<R: Runtime>(app: AppHandle<R>, state: SharedMuseState, sdk_token: String) -> Result<(), String> {
     validate_sdk_token(&sdk_token)?;
     let sdk_token = sdk_token.trim().to_string();
     set_secret(KEY_SDK_TOKEN, &sdk_token)?;
@@ -467,9 +476,6 @@ pub fn muse_pair<R: Runtime>(
     save_state(&app, &device)?;
     emit_status(&app, &state);
 
-    // The BLE setup window blocks for up to a few minutes. Tauri runs command
-    // handlers on a worker thread (not the UI thread), so blocking here is
-    // fine; the UI shows its own "pairing…" state and listens for muse://status.
     run_ble_pairing(&app, &state, &device.mac, &sdk_token)?;
 
     // Start the live link now that we have a device token.
@@ -508,6 +514,7 @@ fn run_ble_pairing<R: Runtime>(
         let (vms, status) = fetch_vms(&creds.access_token, &root);
         if vms.is_empty() {
             log::warn!("muse: provisioned token check failed (HTTP {status:?})");
+            eprintln!("[muse] provisioned token check failed (HTTP {status:?})");
             return Err("auth_failed".into());
         }
         // Persist secrets in the keychain and non-secret state in muse.json.
@@ -526,7 +533,9 @@ fn run_ble_pairing<R: Runtime>(
         Ok(())
     };
 
+    eprintln!("[muse] pairing window open for {}s as '{}'", ble::SETUP_WINDOW_SECS, ble::ble_name(mac));
     let pair_result = ble::run_setup_window(params, commit);
+    eprintln!("[muse] pairing finished: {}", match &pair_result { Ok(_) => "ok".to_string(), Err(e) => e.clone() });
     match pair_result {
         Ok(_creds) => {
             set_error(app, state, None);
@@ -617,13 +626,21 @@ pub fn muse_set_commands(
 
 /// Send a user message to the Muse and wait for its reply.
 #[tauri::command]
-pub fn muse_send<R: Runtime>(
+pub async fn muse_send<R: Runtime>(
     _app: AppHandle<R>,
     state: tauri::State<'_, SharedMuseState>,
     text: String,
     session_id: Option<String>,
     timeout_secs: Option<u64>,
 ) -> Result<MuseReply, String> {
+    // Waiting for Muse's answer must not block the main thread (sync commands run there).
+    let state: SharedMuseState = (*state).clone();
+    tauri::async_runtime::spawn_blocking(move || muse_send_blocking(&state, text, session_id, timeout_secs))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn muse_send_blocking(state: &SharedMuseState, text: String, session_id: Option<String>, timeout_secs: Option<u64>) -> Result<MuseReply, String> {
     let tx = {
         let inner = state.inner.lock().unwrap();
         inner.session_tx.clone()

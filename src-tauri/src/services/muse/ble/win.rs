@@ -226,11 +226,23 @@ where
     provider
         .StartAdvertisingWithParameters(&adv_params)
         .map_err(|e| e.to_string())?;
+    eprintln!("[muse/ble] GATT service advertising: status={:?}", provider.AdvertisementStatus().map(|s| s.0));
 
     // A second publisher carries the complete local name so the app shows
     // "MuseGadget-XXXXXX". The GattServiceProvider advertisement cannot include
     // a local name; the LE advertisement publisher can.
-    let name_publisher = start_name_advertisement(&params.local_name, service_uuid).ok();
+    let name_publisher = match start_name_advertisement(&params.local_name, service_uuid) {
+        Ok(p) => {
+            eprintln!("[muse/ble] name advertisement '{}' started: status={:?}", params.local_name, p.Status().map(|s| s.0));
+            Some(p)
+        }
+        Err(e) => {
+            // Windows may refuse a custom local name; the app then only sees the service UUID
+            // (and the PC's Bluetooth name).
+            eprintln!("[muse/ble] name advertisement '{}' FAILED: {e}", params.local_name);
+            None
+        }
+    };
 
     // Build the protocol worker on this thread's channel.
     let transport = WinTransport { tx: tx.clone(), mtu: mtu.clone() };
