@@ -14,6 +14,8 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { isTauri, ITauriExtensionAuditReport, setTauriExtensionReviewHandler, TauriAuditSeverity } from '../../../../platform/tauri/common/tauri.js';
 import { IWorkbenchContribution } from '../../../common/contributions.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { reviewExtensionReport } from './tauriAssistant.js';
 
 /**
  * Extension security review (design: docs/rust-rewrite/MCP_DESIGN.md §6).
@@ -100,6 +102,7 @@ export class TauriExtensionAuditContribution extends Disposable implements IWork
 		@IDialogService private readonly dialogService: IDialogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ILogService private readonly logService: ILogService,
+		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super();
 		if (!isTauri()) {
@@ -124,6 +127,11 @@ export class TauriExtensionAuditContribution extends Disposable implements IWork
 		const installLabel = blockHigh
 			? localize('codeRsInstallAnyway', "Install Anyway (Not Recommended)")
 			: isUpdate ? localize('codeRsUpdate', "Update") : localize('codeRsInstall', "Install");
+		const details = [{ markdown: renderAuditReport(report) }];
+		const ai = await this.aiOpinion(report);
+		if (ai) {
+			details.push({ markdown: ai });
+		}
 		const { result } = await this.dialogService.prompt<boolean>({
 			type: report.risk === 'high' ? Severity.Error : report.risk === 'medium' ? Severity.Warning : Severity.Info,
 			message: isUpdate
@@ -131,8 +139,29 @@ export class TauriExtensionAuditContribution extends Disposable implements IWork
 				: localize('codeRsReviewInstall', "Review '{0}' before installing", report.displayName ?? report.id),
 			buttons: [{ label: installLabel, run: () => true }],
 			cancelButton: { label: localize('codeRsCancel', "Cancel"), run: () => false },
-			custom: { markdownDetails: [{ markdown: renderAuditReport(report) }] },
+			custom: { markdownDetails: details },
 		});
 		return result === true;
+	}
+
+	/** Opinion of the configured AI reviewer, if any. Failures never block the install dialog. */
+	private async aiOpinion(report: ITauriExtensionAuditReport): Promise<MarkdownString | undefined> {
+		const status = this.notificationService.status(localize('codeRsAiReviewing', "AI is reviewing '{0}'...", report.displayName ?? report.id));
+		try {
+			const r = await reviewExtensionReport(this.configurationService, report);
+			if (!r) {
+				return undefined;
+			}
+			const md = new MarkdownString(`**${localize('codeRsAiOpinion', "AI review")}** (${r.provider} · ${r.model})
+
+`);
+			md.appendText(r.text);
+			return md;
+		} catch (error) {
+			this.logService.warn(`[extension audit] AI review failed: ${error}`);
+			return new MarkdownString().appendText(localize('codeRsAiFailed', "AI review unavailable: {0}", String(error)));
+		} finally {
+			status.close();
+		}
 	}
 }

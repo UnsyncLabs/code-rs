@@ -140,6 +140,11 @@ pub fn run() {
             services::mcp::mcp_respond,
             services::mcp::mcp_status,
             services::mcp::mcp_recent_activity,
+            // --- assistant (AI providers) ---
+            services::assistant::assistant_providers,
+            services::assistant::assistant_provider_save,
+            services::assistant::assistant_provider_delete,
+            services::assistant::assistant_complete,
         ])
         .build(tauri::generate_context!())
         .expect("error while building code-rs tauri application")

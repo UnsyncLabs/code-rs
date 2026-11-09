@@ -31,6 +31,9 @@ import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '
 import { IWorkspaceEditingService } from '../../../services/workspaces/common/workspaceEditing.js';
 import { isCodeEditor } from '../../../../editor/browser/editorBrowser.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IStorageService } from '../../../../platform/storage/common/storage.js';
+import { listProviders, reviewCode, reviewExtensionReport } from './tauriAssistant.js';
 import { IExtensionGalleryService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 
 /**
@@ -112,6 +115,8 @@ export class TauriMcpContribution extends Disposable implements IWorkbenchContri
 		@ICommandService private readonly commandService: ICommandService,
 		@IStatusbarService private readonly statusbarService: IStatusbarService,
 		@IExtensionGalleryService private readonly galleryService: IExtensionGalleryService,
+		@IDialogService private readonly dialogService: IDialogService,
+		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
 		if (!isTauri()) {
@@ -305,6 +310,34 @@ export class TauriMcpContribution extends Disposable implements IWorkbenchContri
 				});
 				await tauriInvoke('extension_quarantine_discard', { quarantineId });
 				return report;
+			}
+			case 'assistant_providers':
+				return (await listProviders()).map(p => ({ id: p.id, label: p.label, kind: p.kind, model: p.model, local: p.local, ready: p.hasKey || p.local }));
+			case 'assistant_review_extension': {
+				const report = await this.run('extensions_audit', args, defer) as ITauriExtensionAuditReport;
+				const review = await reviewExtensionReport(this.configurationService, report, typeof args.providerId === 'string' ? args.providerId : undefined);
+				if (!review) {
+					throw new Error('No extension reviewer is configured (Settings > AI Assistant > Reviewer: Extensions).');
+				}
+				return { report, review: review.text, provider: review.provider, model: review.model };
+			}
+			case 'assistant_review_code': {
+				const paths = Array.isArray(args.paths) ? args.paths.map(String).slice(0, 20) : [];
+				if (!paths.length) {
+					throw new Error('paths is required.');
+				}
+				let content = '';
+				for (const p of paths) {
+					const file = await this.run('file_read', { path: p }, defer) as { content?: string };
+					content += `--- ${p}
+${file.content ?? ''}
+`;
+					if (content.length > 400_000) {
+						throw new Error('Too much code for one review (max ~400 KB); pass fewer files.');
+					}
+				}
+				const review = await reviewCode({ configurationService: this.configurationService, dialogService: this.dialogService, storageService: this.storageService }, content, typeof args.focus === 'string' ? args.focus : undefined);
+				return { review: review.text, provider: review.provider, model: review.model };
 			}
 			case 'ui_notify': {
 				const sev = args.severity === 'error' ? Severity.Error : args.severity === 'warning' ? Severity.Warning : Severity.Info;

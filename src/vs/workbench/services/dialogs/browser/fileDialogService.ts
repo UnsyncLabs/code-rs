@@ -344,7 +344,6 @@ export class FileDialogService extends AbstractFileDialogService implements IFil
 	private async tauriPickAndOpen(options: IPickAndOpenOptions, kind: 'file' | 'folder' | 'fileFolder'): Promise<void> {
 		const defaultUri = options.defaultUri ?? (kind === 'file' ? await this.defaultFilePath(Schemas.file) : await this.defaultFolderPath(Schemas.file));
 		const paths = await tauriShowOpenDialog({
-			title: options.title,
 			defaultPath: defaultUri?.scheme === Schemas.file ? defaultUri.fsPath : undefined,
 			directory: kind === 'folder',
 		});

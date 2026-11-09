@@ -22,6 +22,7 @@ import { TauriUpdatesContribution } from './tauriUpdates.js';
 import { TauriMcpContribution } from './tauriMcp.js';
 import { TauriExtensionAuditContribution } from './tauriExtensionAudit.js';
 import { TauriWindowControlsContribution } from './tauriWindowControls.js';
+import './tauriAssistant.js';
 
 /**
  * Wires the native Rust/Tauri services into the web workbench when it is hosted

@@ -5,6 +5,7 @@
 //! signatures are in place and compile, but the bodies are `TODO`s.
 
 pub mod app_protocol;
+pub mod assistant;
 pub mod extension_host;
 pub mod extension_audit;
 pub mod extension_install;
