@@ -6,6 +6,7 @@
 
 pub mod acp;
 pub mod acp_snapshot;
+pub mod static_server;
 pub mod app_protocol;
 pub mod assistant;
 pub mod guardian;

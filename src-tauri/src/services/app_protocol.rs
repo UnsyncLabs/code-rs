@@ -116,7 +116,7 @@ fn serve_file(root: &Path, url_path: &str) -> Result<(Vec<u8>, &'static str), (S
     }
 }
 
-fn mime_for(p: &Path) -> &'static str {
+pub(crate) fn mime_for(p: &Path) -> &'static str {
     match p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
         "html" | "htm" => "text/html; charset=utf-8",
         "js" | "mjs" | "cjs" => "text/javascript; charset=utf-8",
@@ -212,6 +212,24 @@ fn render_workbench(root: &Path) -> Result<String, (StatusCode, String)> {
         r#"<script type="module" src="{STATIC_PREFIX}/out/vs/code/browser/workbench/tauriSplash.js"></script>"#
     );
     out = out.replacen(&workbench_script, &format!("{splash_script}\n\t{workbench_script}"), 1);
+    if !dev {
+        // Release bundle: load the workbench code from the cached loopback server
+        // (static_server.rs) so WebView2 reuses its compiled code across launches.
+        // The splash bundle is self-contained (no imports): inline it so the layout
+        // skeleton paints with the document, without waiting for another request.
+        if let Ok(js) = std::fs::read_to_string(root.join("out/vs/code/browser/workbench/tauriSplash.js")) {
+            if !js.contains("</script") && !js.contains("import") {
+                let js = js.split("\n//# sourceMappingURL=").next().unwrap_or(&js);
+                out = out.replacen(&splash_script, &format!("<script>{js}</script>"), 1);
+            }
+        }
+        let enabled = std::env::var_os("CODE_RS_NO_STATIC_SERVER").is_none();
+        if let Some(origin) = enabled.then(|| super::static_server::start(root).ok()).flatten() {
+            let from = format!(r#"src="{STATIC_PREFIX}/out/vs/code/browser/workbench/workbench.js""#);
+            let to = format!(r#"src="{origin}{STATIC_PREFIX}/out/vs/code/browser/workbench/workbench.js""#);
+            out = out.replacen(&from, &to, 1);
+        }
+    }
     Ok(out)
 }
 
@@ -264,7 +282,7 @@ fn html_attr(s: &str) -> String {
     s.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
