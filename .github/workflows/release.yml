@@ -170,6 +170,9 @@ jobs:
   arch:
     name: Arch Linux package
     needs: build
+    # Only the Linux .deb is needed: run even when another platform failed (e.g. the
+    # intermittent macOS dmg error). Fails at the download step if the .deb is missing.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
