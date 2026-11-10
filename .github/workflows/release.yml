@@ -58,12 +58,15 @@ jobs:
             platform: darwin
             arch: arm64
             rust_target: aarch64-apple-darwin
+            # The .dmg is made in its own step (see "macOS disk image" below).
+            bundles: --bundles app
           - name: macOS Intel
             # macos-13 was retired (jobs stay queued forever).
             os: macos-15-intel
             platform: darwin
             arch: x64
             rust_target: x86_64-apple-darwin
+            bundles: --bundles app
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -166,6 +169,31 @@ jobs:
           npx -y @tauri-apps/cli@2 build --target ${{ matrix.rust_target }} --bundles appimage --verbose
           dir=src-tauri/target/${{ matrix.rust_target }}/release/bundle/appimage
           gh release upload "$TAG" "$dir"/*.AppImage "$dir"/*.AppImage.sig --clobber -R "$GITHUB_REPOSITORY"
+
+      # Tauri's dmg script lays the window out through Finder and then fails intermittently
+      # on the runners ("hdiutil: detach: timeout for DiskArbitration expired"). A plain
+      # hdiutil image (app + Applications shortcut) with retries is reliable.
+      - name: macOS disk image
+        if: matrix.platform == 'darwin'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bundle=src-tauri/target/${{ matrix.rust_target }}/release/bundle
+          version="${TAG#v}"
+          arch=$([ "${{ matrix.arch }}" = arm64 ] && echo aarch64 || echo x64)
+          dmg="$bundle/code-rs_${version}_${arch}.dmg"
+          stage=$(mktemp -d)
+          cp -R "$bundle/macos/code-rs.app" "$stage/"
+          ln -s /Applications "$stage/Applications"
+          for attempt in 1 2 3 4 5; do
+            rm -f "$dmg"
+            hdiutil create -volname code-rs -srcfolder "$stage" -ov -format UDZO "$dmg" && break
+            echo "hdiutil failed (attempt $attempt), retrying in 10 s"
+            sleep 10
+          done
+          test -f "$dmg"
+          gh release upload "$TAG" "$dmg" --clobber -R "$GITHUB_REPOSITORY"
 
   arch:
     name: Arch Linux package
