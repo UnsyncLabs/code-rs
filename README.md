@@ -1,3 +1,5 @@
+<p align="center"><img src="resources/code-rs/code-rs.svg" width="96" alt="code-rs logo"></p>
+
 # code-rs
 
 **VS Code without Electron.** code-rs runs the Visual Studio Code workbench inside a
@@ -27,13 +29,36 @@ what is underneath is not.
 
 Other improvements made along the way:
 
-- **No white flash on reload.** The theme background is applied to the native window, and the
-  desktop "parts splash" (the layout skeleton VS Code shows while loading) is drawn while a
-  window reloads.
-- **Adding a folder to the workspace does not reload the window.** It switches the workspace
-  and its storage in place, like the desktop build.
+- **No white flash.** The window appears only once the theme background is painted, and the
+  desktop "parts splash" (the layout skeleton VS Code shows while loading) is drawn right away.
+- **Faster startup.** The workbench code is cached between launches, and the window remembers
+  its size and position.
+- **Opening and closing folders does not reload the window.** The workspace and its storage
+  switch in place (about 0.1 s).
 - **Native dialogs** for Open File/Folder and Save, and *Close Folder* / *Add Folder to
   Workspace* in the File menu.
+
+## AI agents and tools
+
+- **Agent chat** (`Ctrl+Alt+I`, or the chat button in the title bar), built on VS Code's chat:
+  - **Your AI providers** as chat models: Anthropic, OpenAI, OpenRouter, Meta, and local models.
+    An effort dropdown sits next to the model picker.
+  - **External agents** through the [Agent Client Protocol](https://agentclientprotocol.com):
+    Claude Code, Kiro and Antigravity, when they are installed.
+    - Claude Code needs the adapter: `npm i -g @agentclientprotocol/claude-agent-acp`.
+- **Approvals.** The agent's own approval mode decides: when it asks, its requests appear as
+  cards in the chat (or a dialog when the chat is closed). The setting
+  `codeRs.agents.approvalsInIde` makes code-rs ask for every action instead.
+- **Every agent turn lists the files it changed** (+/− lines); click one to see its diff.
+  Proposed edits are shown as a diff before you approve them.
+- **Built-in MCP server.** AI clients can read the workspace and, with your confirmation:
+  - edit files;
+  - run commands, checked by a guardian that flags dangerous ones (recursive deletes,
+    history rewrites, download-and-run…);
+  - install and uninstall extensions.
+
+  Panel: `Ctrl+Alt+Shift+M`. Design notes:
+  [docs/rust-rewrite/MCP_DESIGN.md](docs/rust-rewrite/MCP_DESIGN.md).
 
 ## Pretext line-wrapping benchmark
 
@@ -56,15 +81,14 @@ back to the DOM path during the benchmark. Details and the script to reproduce i
 
 Installers are attached to each [release](https://github.com/UnsyncLabs/code-rs/releases):
 
-| Platform | Formats | Approx. download size |
-|---|---|---|
-| Windows x64 | `.exe` (NSIS), `.msi` | ~120 MB (measured: 118 MiB) |
-| Linux x64 | `.deb`, `.rpm`, `.AppImage`, Arch `.pkg.tar.zst` | ~110–150 MB (estimated) |
-| macOS (Apple Silicon, Intel) | `.dmg` | ~110–150 MB (estimated) |
+| Platform | Formats |
+|---|---|
+| Windows x64, Windows ARM64 | `.exe` (NSIS), `.msi` |
+| Linux x64 | `.deb`, `.rpm`, `.AppImage`, Arch `.pkg.tar.zst` |
+| macOS Apple Silicon, macOS Intel | `.dmg` |
 
-Installed size is about **600 MB**, most of it the unminified workbench and the bundled Node.js
-runtime used by the extension host. These numbers are approximate and expected to shrink:
-minifying the workbench is on the roadmap.
+Most of the size is the workbench, the built-in extensions and the bundled Node.js runtime used by
+the extension host. Binaries for other platforms are removed from each package.
 
 Installers are **not code-signed yet**: Windows SmartScreen and macOS Gatekeeper will warn on
 first launch. Updates themselves are signed and verified.
@@ -90,13 +114,18 @@ cd src-tauri && cargo tauri dev -- -- /path/to/folder         # run from source
 ```
 
 Release packaging: `node scripts/code-rs/stage-app.mjs` assembles the runtime files, then
-`cargo tauri build`. Architecture notes live in [docs/rust-rewrite](docs/rust-rewrite).
+`cargo tauri build`. Documentation index: [docs/README.md](docs/README.md).
 
 ## Status
 
-Early, but usable day to day: editing, search, terminal, Git, webviews, Markdown preview and
-Node extensions (including Python) work. Known gaps: multi-window, debugging adapters that need
-native modules not yet ported, workbench minification, signed installers.
+Early, but usable day to day: editing, search, terminal, Git, webviews, Markdown preview, Node
+extensions (including Python) and the AI agents work. Windows is the most tested platform; the
+Linux and Apple Silicon builds have had less testing. Known gaps:
+
+- multi-window;
+- debugging adapters that need native modules not yet ported;
+- signed installers;
+- Muse pairing needs a BLE bridge (Windows cannot advertise the gadget name).
 
 ## Credits
 

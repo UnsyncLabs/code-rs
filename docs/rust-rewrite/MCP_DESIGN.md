@@ -1,6 +1,6 @@
 # Diseño: servidor MCP de code-rs
 
-Estado: **fase 1 implementada** (`src-tauri/src/services/mcp.rs`, `src/vs/workbench/contrib/tauri/browser/tauriMcp.ts`); fases 2–5 pendientes. Panel MCP: `Ctrl+Alt+Shift+M` (`Cmd+Alt+Shift+M` en macOS).
+Estado: **fases 1–5 implementadas** (`src-tauri/src/services/mcp.rs`, `src/vs/workbench/contrib/tauri/browser/tauriMcp.ts`); ver la sección de estado. Panel MCP: `Ctrl+Alt+Shift+M` (`Cmd+Alt+Shift+M` en macOS).
 
 ## 1. Objetivo
 
