@@ -39,10 +39,26 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
-        // Serves the workbench (out/, extensions/) from disk: no Node web server.
-        .register_uri_scheme_protocol(services::app_protocol::SCHEME, |_ctx, request| {
-            services::app_protocol::handle(request)
-        })
+        // Remembers size, position and maximized state. Visibility is not restored: the
+        // window stays hidden until the first page has loaded (see below).
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        & !tauri_plugin_window_state::StateFlags::VISIBLE,
+                )
+                .build(),
+        )
+        // Serves the workbench (out/, extensions/) from disk: no Node web server. Async so
+        // file reads run off the UI thread (a sync handler blocks the webview on every file).
+        .register_asynchronous_uri_scheme_protocol(
+            services::app_protocol::SCHEME,
+            |_ctx, request, responder| {
+                tauri::async_runtime::spawn_blocking(move || {
+                    responder.respond(services::app_protocol::handle(request))
+                });
+            },
+        )
         // pty service (services/pty.rs) tracks live terminal sessions here.
         .manage(services::pty::PtyState::default())
         // Node extension host bridge state (services/extension_host.rs).
@@ -90,7 +106,25 @@ pub fn run() {
             ))
             .inner_size(1200.0, 800.0)
             .min_inner_size(600.0, 400.0)
+            // Hidden until the page has loaded (theme background + splash), so the user
+            // never sees an empty or white window.
+            .visible(false)
+            .on_page_load(|webview, payload| {
+                if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                    let _ = webview.show();
+                }
+            })
             .build()?;
+            // Safety net: show the window even if the page never finishes loading.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                if let Some(w) = handle.get_webview_window("main") {
+                    if !w.is_visible().unwrap_or(true) {
+                        let _ = w.show();
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
