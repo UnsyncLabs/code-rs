@@ -149,12 +149,30 @@ const archiveExt = platform === 'win32' ? 'zip' : platform === 'linux' ? 'tar.xz
 const archiveName = `node-v${nodeVersion}-${nodePlatform}-${arch}.${archiveExt}`;
 const base = `https://nodejs.org/dist/v${nodeVersion}`;
 
-const sums = await (await fetch(`${base}/SHASUMS256.txt`)).text();
+// Retries: a network hiccup reaching nodejs.org must not fail the release.
+async function download(url) {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			const res = await fetch(url);
+			if (!res.ok) {
+				throw new Error(`HTTP ${res.status}`);
+			}
+			return Buffer.from(await res.arrayBuffer());
+		} catch (err) {
+			if (attempt >= 5) {
+				throw err;
+			}
+			log(`download failed (${err.message}), retrying in ${attempt * 10} s: ${url}`);
+			await new Promise(r => setTimeout(r, attempt * 10_000));
+		}
+	}
+}
+const sums = (await download(`${base}/SHASUMS256.txt`)).toString('utf8');
 const expected = sums.split('\n').find(l => l.endsWith(`  ${archiveName}`))?.split(/\s+/)[0];
 if (!expected) {
 	throw new Error(`no checksum for ${archiveName}`);
 }
-const archive = Buffer.from(await (await fetch(`${base}/${archiveName}`)).arrayBuffer());
+const archive = await download(`${base}/${archiveName}`);
 const actual = createHash('sha256').update(archive).digest('hex');
 if (actual !== expected) {
 	throw new Error(`checksum mismatch for ${archiveName}`);
